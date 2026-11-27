@@ -51,6 +51,60 @@ impl std::fmt::Display for ClaudeError {
     }
 }
 
+/// Recent questions and answers, so follow-ups like "why was that?" have context.
+/// Held in memory only and forgotten after a few minutes of inactivity.
+pub struct Conversation {
+    turns: Vec<(String, String)>,
+    last: Option<std::time::Instant>,
+}
+
+impl Conversation {
+    const MAX_TURNS: usize = 6;
+    const EXPIRY: Duration = Duration::from_secs(5 * 60);
+
+    pub const fn new() -> Self {
+        Self {
+            turns: Vec::new(),
+            last: None,
+        }
+    }
+
+    fn expire(&mut self, now: std::time::Instant) {
+        if self
+            .last
+            .is_some_and(|t| now.duration_since(t) > Self::EXPIRY)
+        {
+            self.turns.clear();
+        }
+    }
+
+    /// Earlier turns that are still fresh enough to use as context.
+    pub fn history(&mut self, now: std::time::Instant) -> Vec<(String, String)> {
+        self.expire(now);
+        self.turns.clone()
+    }
+
+    pub fn record(&mut self, question: String, answer: String, now: std::time::Instant) {
+        self.expire(now);
+        self.turns.push((question, answer));
+        if self.turns.len() > Self::MAX_TURNS {
+            self.turns.remove(0);
+        }
+        self.last = Some(now);
+    }
+}
+
+/// Build the message list: earlier turns as plain text, then the new question.
+pub fn build_messages(history: &[(String, String)], request: &str) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(history.len() * 2 + 1);
+    for (q, a) in history {
+        messages.push(json!({ "role": "user", "content": q }));
+        messages.push(json!({ "role": "assistant", "content": a }));
+    }
+    messages.push(json!({ "role": "user", "content": request }));
+    messages
+}
+
 pub fn system_prompt(now: chrono::DateTime<chrono::Local>) -> String {
     format!(
         "You are a voice assistant running in the background on the user's computer. \
@@ -140,15 +194,17 @@ impl Claude {
     }
 
     /// Ask one question and return a speakable answer.
-    pub fn ask(&self, request: &str) -> Result<Answer, ClaudeError> {
+    /// Ask a question, with earlier turns of the conversation as context.
+    pub fn ask(&self, request: &str, history: &[(String, String)]) -> Result<Answer, ClaudeError> {
         let system = system_prompt(chrono::Local::now());
-        let mut messages = vec![json!({ "role": "user", "content": request })];
+        let mut messages = build_messages(history, request);
+        let base_len = messages.len();
         for _ in 0..=MAX_CONTINUATIONS {
             let resp = self.post(&self.build_request(&messages, &system))?;
             match resp["stop_reason"].as_str() {
                 Some("pause_turn") => {
                     // Resume the server-side tool loop: resend with the partial assistant turn.
-                    messages.truncate(1);
+                    messages.truncate(base_len);
                     messages
                         .push(json!({ "role": "assistant", "content": resp["content"].clone() }));
                     continue;
@@ -247,6 +303,31 @@ mod tests {
             extract_text(&resp).unwrap(),
             "Nvidia closed at $165.05 on Monday."
         );
+    }
+
+    #[test]
+    fn conversation_keeps_recent_turns_in_order() {
+        let t0 = std::time::Instant::now();
+        let mut c = Conversation::new();
+        c.record("price of nvidia".into(), "165 dollars".into(), t0);
+        let msgs = build_messages(&c.history(t0), "why was that?");
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0]["content"], "price of nvidia");
+        assert_eq!(msgs[1]["role"], "assistant");
+        assert_eq!(msgs[2]["content"], "why was that?");
+    }
+
+    #[test]
+    fn conversation_expires_and_is_capped() {
+        let t0 = std::time::Instant::now();
+        let mut c = Conversation::new();
+        for i in 0..10 {
+            c.record(format!("q{i}"), format!("a{i}"), t0);
+        }
+        assert_eq!(c.history(t0).len(), Conversation::MAX_TURNS);
+        assert_eq!(c.history(t0)[0].0, "q4");
+        let later = t0 + Conversation::EXPIRY + Duration::from_secs(1);
+        assert!(c.history(later).is_empty());
     }
 
     #[test]

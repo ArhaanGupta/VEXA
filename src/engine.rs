@@ -270,6 +270,10 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<St
     }
 }
 
+/// The current conversation, kept in memory only.
+static CONVERSATION: std::sync::Mutex<crate::claude::Conversation> =
+    std::sync::Mutex::new(crate::claude::Conversation::new());
+
 /// Run a request on its own thread so listening never waits on the network.
 pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
     let _ = thread::Builder::new()
@@ -285,9 +289,16 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
                 return;
             };
             let started = Instant::now();
-            match Claude::new(key).ask(&request) {
+            let history = CONVERSATION
+                .lock()
+                .map(|mut c| c.history(started))
+                .unwrap_or_default();
+            match Claude::new(key).ask(&request, &history) {
                 Ok(a) => {
                     debug!("answered in {} ms", started.elapsed().as_millis());
+                    if let Ok(mut c) = CONVERSATION.lock() {
+                        c.record(request.clone(), a.text.clone(), Instant::now());
+                    }
                     ui.send(UiEvent::Answer {
                         request,
                         text: a.text,

@@ -95,7 +95,7 @@ fn run_app() -> Result<()> {
 fn cli_ask(question: &str) -> Result<()> {
     let key = secrets::load_api_key().ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
     let started = std::time::Instant::now();
-    match claude::Claude::new(key).ask(question) {
+    match claude::Claude::new(key).ask(question, &[]) {
         Ok(a) => println!("{}\n({:.1}s)", a.text, started.elapsed().as_secs_f32()),
         Err(e) => eprintln!("{e}"),
     }
