@@ -11,7 +11,7 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "name": "stock_prices",
             "description": "Daily closing prices for the last few weeks, plus the latest price, for a \
-        stock, ETF, index or cryptocurrency, from market data. Use this instead of web search for any price \
+        stock, ETF, index, cryptocurrency or currency exchange rate, from market data. Use this instead of web search for any price \
         or closing-price question. Dates are in the exchange's local time zone.",
             "input_schema": {
                 "type": "object",
@@ -19,7 +19,7 @@ pub fn definitions() -> Vec<Value> {
                     "symbol": {
                         "type": "string",
                         "description": "Ticker in Yahoo Finance format, e.g. NVDA, AAPL, ^GSPC (S&P 500), \
-        ^IXIC (Nasdaq), BHP.AX (ASX), RELIANCE.NS (NSE), BTC-USD."
+        ^IXIC (Nasdaq), BHP.AX (ASX), RELIANCE.NS (NSE), BTC-USD, AUDINR=X (Australian dollar in rupees)."
                     }
                 },
                 "required": ["symbol"],
