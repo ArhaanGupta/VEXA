@@ -18,6 +18,9 @@ jobs:
 
   windows:
     runs-on: windows-latest
+    env:
+      # whisper.cpp bindings are generated with libclang (LLVM is preinstalled on the runner).
+      LIBCLANG_PATH: C:\Program Files\LLVM\bin
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

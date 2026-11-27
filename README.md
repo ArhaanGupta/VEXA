@@ -53,7 +53,8 @@ Say **"Vexa, stop"** to stop an answer that's being read aloud.
 ## Build from source (Windows)
 
 1. Install [Rust](https://rustup.rs/), [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-   (choose *Desktop development with C++*) and [CMake](https://cmake.org/download/).
+   (choose *Desktop development with C++*), [CMake](https://cmake.org/download/) and
+   [LLVM](https://github.com/llvm/llvm-project/releases) (`winget install LLVM.LLVM`).
 2. Build and run:
 
    ```powershell
