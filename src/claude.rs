@@ -492,7 +492,8 @@ mod tests {
     fn haiku_request_uses_basic_search_and_no_fallbacks() {
         let c = Claude::with_model("k".into(), "claude-haiku-5-5");
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
-        assert_eq!(body["tools"][1]["type"], "web_search_20250305");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.last().unwrap()["type"], "web_search_20250305");
         assert!(body.get("fallbacks").is_none());
     }
 
@@ -534,7 +535,8 @@ mod tests {
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
         assert_eq!(body["model"], MODEL);
         assert_eq!(body["tools"][0]["name"], "stock_prices");
-        assert_eq!(body["tools"][1]["type"], "web_search_20260209");
+        let tools = body["tools"].as_array().unwrap();
+        assert_eq!(tools.last().unwrap()["type"], "web_search_20260209");
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
