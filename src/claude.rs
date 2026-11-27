@@ -53,16 +53,18 @@ const SEARCH_PRICE_USD: f64 = 0.01;
 impl Usage {
     pub fn add(&mut self, model: &str, usage: &Value) {
         let n = |v: &Value| v.as_u64().unwrap_or(0);
-        let input = n(&usage["input_tokens"])
-            + n(&usage["cache_read_input_tokens"])
-            + n(&usage["cache_creation_input_tokens"]);
+        let fresh = n(&usage["input_tokens"]);
+        let cache_read = n(&usage["cache_read_input_tokens"]);
+        let cache_write = n(&usage["cache_creation_input_tokens"]);
         let output = n(&usage["output_tokens"]);
         let searches = n(&usage["server_tool_use"]["web_search_requests"]);
         let (pin, pout) = price_per_mtok(model);
-        self.input_tokens += input;
+        self.input_tokens += fresh + cache_read + cache_write;
         self.output_tokens += output;
         self.searches += searches;
-        self.cost_usd += input as f64 * pin / 1e6
+        // Cache reads bill at 0.1x the input price, 5-minute cache writes at 1.25x.
+        let input_cost = fresh as f64 + cache_read as f64 * 0.1 + cache_write as f64 * 1.25;
+        self.cost_usd += input_cost * pin / 1e6
             + output as f64 * pout / 1e6
             + searches as f64 * SEARCH_PRICE_USD;
     }
@@ -501,6 +503,16 @@ mod tests {
         append_assistant(&mut m, &json!([{ "type": "text", "text": "b" }]));
         assert_eq!(m.len(), 2);
         assert_eq!(m[1]["content"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn cached_tokens_are_discounted() {
+        let mut u = Usage::default();
+        u.add(
+            "claude-sonnet-5-5",
+            &json!({ "input_tokens": 0, "cache_read_input_tokens": 1_000_000, "output_tokens": 0 }),
+        );
+        assert!((u.cost_usd - 0.2).abs() < 1e-9, "{}", u.cost_usd);
     }
 
     #[test]
