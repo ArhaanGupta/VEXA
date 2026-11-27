@@ -27,7 +27,12 @@ pub enum UiEvent {
     /// A request was captured and is being worked on in the background.
     Working { request: String },
     /// The answer is ready.
-    Answer { request: String, text: String },
+    Answer {
+        request: String,
+        text: String,
+        /// Tokens, searches and estimated cost of this answer.
+        usage: String,
+    },
     /// Something failed; shown briefly.
     Error(String),
     /// Stop speaking and hide the card.
@@ -326,13 +331,18 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
                 .unwrap_or_default();
             match Claude::new(key).ask(&request, &history) {
                 Ok(a) => {
-                    debug!("answered in {} ms", started.elapsed().as_millis());
+                    debug!(
+                        "answered in {} ms ({})",
+                        started.elapsed().as_millis(),
+                        a.usage.summary()
+                    );
                     if let Ok(mut c) = CONVERSATION.lock() {
                         c.record(request.clone(), a.text.clone(), Instant::now());
                     }
                     ui.send(UiEvent::Answer {
                         request,
                         text: a.text,
+                        usage: a.usage.summary(),
                     });
                 }
                 Err(e) => ui.send(UiEvent::Error(e.to_string())),

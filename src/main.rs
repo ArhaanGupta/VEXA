@@ -68,8 +68,8 @@ fn run_app() -> Result<()> {
                 }
                 UiEvent::Listening => println!("(listening…)"),
                 UiEvent::Working { request } => println!("> {request}"),
-                UiEvent::Answer { text, .. } => {
-                    println!("{text}\n");
+                UiEvent::Answer { text, usage, .. } => {
+                    println!("{text}\n({usage})\n");
                     self.0.open_follow_up(10);
                 }
                 UiEvent::Error(e) => eprintln!("error: {e}"),
@@ -100,7 +100,12 @@ fn cli_ask(question: &str) -> Result<()> {
     let key = secrets::load_api_key().ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
     let started = std::time::Instant::now();
     match claude::Claude::new(key).ask(question, &[]) {
-        Ok(a) => println!("{}\n({:.1}s)", a.text, started.elapsed().as_secs_f32()),
+        Ok(a) => println!(
+            "{}\n({:.1}s, {})",
+            a.text,
+            started.elapsed().as_secs_f32(),
+            a.usage.summary()
+        ),
         Err(e) => eprintln!("{e}"),
     }
     Ok(())

@@ -253,7 +253,17 @@ fn handle(
             tts.stop();
             overlay.show_wave(&request, Some(Duration::from_secs(120)));
         }
-        UiEvent::Answer { request, text } => {
+        UiEvent::Answer {
+            request,
+            text,
+            usage,
+        } => {
+            // While testing, show what each answer cost alongside the question.
+            let request = if cfg.always_show {
+                format!("{usage} \u{00b7} {request}")
+            } else {
+                request
+            };
             if cfg.speak_answers {
                 stats.set_speaking(true);
                 tts.speak(&text);

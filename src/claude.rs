@@ -21,10 +21,70 @@ pub struct Claude {
     effort: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Answer {
     /// Plain text, suitable to speak aloud.
     pub text: String,
+    pub usage: Usage,
+}
+
+/// Tokens and searches used by one answer (summed over resumed tool loops).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Usage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub searches: u64,
+    pub cost_usd: f64,
+}
+
+/// List prices in USD per million tokens (input, output) for standard requests.
+fn price_per_mtok(model: &str) -> (f64, f64) {
+    match model {
+        m if m.starts_with("claude-haiku-5-5") => (0.10, 0.50),
+        m if m.starts_with("claude-sonnet-5-5") => (2.0, 10.0),
+        m if m.starts_with("claude-opus-5-5") => (4.0, 20.0),
+        _ => (5.0, 25.0),
+    }
+}
+
+/// Web search is billed per search on top of tokens ($10 per 1,000).
+const SEARCH_PRICE_USD: f64 = 0.01;
+
+impl Usage {
+    pub fn add(&mut self, model: &str, usage: &Value) {
+        let n = |v: &Value| v.as_u64().unwrap_or(0);
+        let input = n(&usage["input_tokens"])
+            + n(&usage["cache_read_input_tokens"])
+            + n(&usage["cache_creation_input_tokens"]);
+        let output = n(&usage["output_tokens"]);
+        let searches = n(&usage["server_tool_use"]["web_search_requests"]);
+        let (pin, pout) = price_per_mtok(model);
+        self.input_tokens += input;
+        self.output_tokens += output;
+        self.searches += searches;
+        self.cost_usd += input as f64 * pin / 1e6
+            + output as f64 * pout / 1e6
+            + searches as f64 * SEARCH_PRICE_USD;
+    }
+
+    /// Short summary, e.g. "12.3k in · 85 out · 2 searches · ≈$0.07".
+    pub fn summary(&self) -> String {
+        let k = |t: u64| {
+            if t >= 1000 {
+                format!("{:.1}k", t as f64 / 1000.0)
+            } else {
+                t.to_string()
+            }
+        };
+        format!(
+            "{} in · {} out · {} search{} · \u{2248}${:.3}",
+            k(self.input_tokens),
+            k(self.output_tokens),
+            self.searches,
+            if self.searches == 1 { "" } else { "es" },
+            self.cost_usd
+        )
+    }
 }
 
 #[derive(Debug)]
@@ -199,8 +259,13 @@ impl Claude {
         let system = system_prompt(chrono::Local::now());
         let mut messages = build_messages(history, request);
         let base_len = messages.len();
+        let mut usage = Usage::default();
         for _ in 0..=MAX_CONTINUATIONS {
             let resp = self.post(&self.build_request(&messages, &system))?;
+            usage.add(
+                resp["model"].as_str().unwrap_or(&self.model),
+                &resp["usage"],
+            );
             match resp["stop_reason"].as_str() {
                 Some("pause_turn") => {
                     // Resume the server-side tool loop: resend with the partial assistant turn.
@@ -214,6 +279,7 @@ impl Claude {
                     let text = extract_text(&resp).map_err(ClaudeError::Other)?;
                     return Ok(Answer {
                         text: speakable(&text),
+                        usage,
                     });
                 }
             }
@@ -328,6 +394,24 @@ mod tests {
         assert_eq!(c.history(t0)[0].0, "q4");
         let later = t0 + Conversation::EXPIRY + Duration::from_secs(1);
         assert!(c.history(later).is_empty());
+    }
+
+    #[test]
+    fn usage_cost_includes_tokens_and_searches() {
+        let mut u = Usage::default();
+        u.add(
+            "claude-opus-5-5",
+            &json!({ "input_tokens": 1_000_000, "output_tokens": 1_000, "server_tool_use": { "web_search_requests": 2 } }),
+        );
+        assert!(
+            (u.cost_usd - (4.0 + 0.02 + 0.02)).abs() < 1e-9,
+            "{}",
+            u.cost_usd
+        );
+        assert_eq!(
+            u.summary(),
+            "1000.0k in · 1.0k out · 2 searches · \u{2248}$4.040"
+        );
     }
 
     #[test]
