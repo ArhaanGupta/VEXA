@@ -152,12 +152,19 @@ impl Claude {
     }
 }
 
-/// Concatenate the text blocks of a Messages API response.
+/// The final answer of a Messages API response: the text blocks after the last tool call.
+/// Text before a search ("I'll look that up.") is narration, not part of the answer.
 pub fn extract_text(resp: &Value) -> Result<String> {
     let blocks = resp["content"]
         .as_array()
         .context("response has no content")?;
-    let text: String = blocks
+    let last_tool = blocks.iter().rposition(|b| {
+        b["type"]
+            .as_str()
+            .is_some_and(|t| t != "text" && t != "thinking")
+    });
+    let start = last_tool.map_or(0, |i| i + 1);
+    let text: String = blocks[start..]
         .iter()
         .filter(|b| b["type"] == "text")
         .filter_map(|b| b["text"].as_str())
@@ -206,6 +213,25 @@ mod tests {
         assert_eq!(
             extract_text(&resp).unwrap(),
             "Nvidia closed at $181.20 on Friday."
+        );
+    }
+
+    #[test]
+    fn drops_narration_before_searches() {
+        let resp = json!({
+            "content": [
+                { "type": "text", "text": "Monday was 23 November. I'll search." },
+                { "type": "server_tool_use", "id": "a", "name": "web_search", "input": {} },
+                { "type": "web_search_tool_result", "tool_use_id": "a", "content": [] },
+                { "type": "text", "text": "Let me double-check." },
+                { "type": "server_tool_use", "id": "b", "name": "web_search", "input": {} },
+                { "type": "web_search_tool_result", "tool_use_id": "b", "content": [] },
+                { "type": "text", "text": "Nvidia closed at $165.05 on Monday." }
+            ]
+        });
+        assert_eq!(
+            extract_text(&resp).unwrap(),
+            "Nvidia closed at $165.05 on Monday."
         );
     }
 
