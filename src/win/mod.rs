@@ -120,6 +120,13 @@ pub fn run() -> Result<()> {
         });
     }
 
+    overlay.show_card(
+        "Vexa",
+        "Starting…",
+        Tone::Normal,
+        Some(Duration::from_secs(30)),
+        false,
+    );
     if crate::secrets::load_api_key().is_none() {
         settings::open(overlay.hwnd);
     }
@@ -190,13 +197,16 @@ pub fn run() -> Result<()> {
 
 fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, status: &MenuItem) {
     match ev {
-        UiEvent::Status(s) => overlay.show_card(
-            "Vexa",
-            &s,
-            Tone::Normal,
-            Some(Duration::from_secs(5)),
-            false,
-        ),
+        UiEvent::Status(s) => {
+            status.set_text(format!("Vexa: {s}"));
+            overlay.show_card(
+                "Vexa",
+                &s,
+                Tone::Normal,
+                Some(Duration::from_secs(30)),
+                false,
+            );
+        }
         UiEvent::Ready => {
             status.set_text("Vexa: listening");
             overlay.show_card(
