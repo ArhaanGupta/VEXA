@@ -93,6 +93,7 @@ pub fn run() -> Result<()> {
     let status = MenuItem::new("Vexa: starting…", false, None);
     let pause = MenuItem::new("Pause listening", true, None);
     let settings_item = MenuItem::new("Settings…", true, None);
+    let test_item = MenuItem::new("Test Claude connection", true, None);
     let autostart_item = CheckMenuItem::new("Start with Windows", true, autostart::enabled(), None);
     let quit = MenuItem::new("Quit Vexa", true, None);
     let menu = Menu::new();
@@ -101,6 +102,7 @@ pub fn run() -> Result<()> {
         &PredefinedMenuItem::separator(),
         &pause,
         &settings_item,
+        &test_item,
         &autostart_item,
         &PredefinedMenuItem::separator(),
         &quit,
@@ -173,6 +175,12 @@ pub fn run() -> Result<()> {
                     PostQuitMessage(0);
                 } else if ev.id == settings_item.id() {
                     settings::open(overlay.hwnd);
+                } else if ev.id == test_item.id() {
+                    // Exercises the API key, network and answer display without the microphone.
+                    engine::dispatch(
+                        "What is today's date, and what is the weather in Sydney right now?".into(),
+                        ui.clone(),
+                    );
                 } else if ev.id == autostart_item.id() {
                     let on = autostart_item.is_checked();
                     if autostart::set(on).is_err() {
