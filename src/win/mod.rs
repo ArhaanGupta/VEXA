@@ -71,6 +71,8 @@ pub fn run() -> Result<()> {
 
     let mut cfg = Config::load();
     let mut overlay = Overlay::create()?;
+    let paused = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(engine::Stats::default());
     let hwnd_raw = overlay.hwnd.0 as isize;
 
     let (tx, rx) = channel::<UiEvent>();
@@ -110,8 +112,6 @@ pub fn run() -> Result<()> {
         .build()?;
 
     // Pipeline (loads the model, which may download on first run)
-    let paused = Arc::new(AtomicBool::new(false));
-    let stats = Arc::new(engine::Stats::default());
     {
         let ui = ui.clone();
         let paused = paused.clone();
@@ -126,13 +126,17 @@ pub fn run() -> Result<()> {
         });
     }
 
-    overlay.show_card(
-        "Vexa",
-        "Starting…",
-        Tone::Normal,
-        Some(Duration::from_secs(30)),
-        false,
-    );
+    if cfg.always_show {
+        overlay.keep_panel(stats.clone(), paused.clone());
+    } else {
+        overlay.show_card(
+            "Vexa",
+            "Starting…",
+            Tone::Normal,
+            Some(Duration::from_secs(30)),
+            false,
+        );
+    }
     if crate::secrets::load_api_key().is_none() {
         settings::open(overlay.hwnd);
     }
@@ -245,7 +249,7 @@ fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, stat
             tts.stop();
             overlay.hide();
         }
-        UiEvent::Heard { .. } => {}
+        UiEvent::Heard { text, addressed } => overlay.set_heard(&text, addressed),
     }
 }
 

@@ -3,6 +3,9 @@
 //! It is a per-pixel-alpha layered window that never takes focus and lets every click through,
 //! so it cannot interrupt typing. It only redraws (30 fps) while visible; hidden, it costs nothing.
 
+use crate::engine::Stats;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Rect, Stroke, Transform};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -33,6 +36,8 @@ enum Mode {
     Wave,
     /// Answer or message card with a calmer wave on top.
     Card,
+    /// Always-on status panel: live mic level, pipeline state and the last thing heard.
+    Idle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,6 +66,15 @@ pub struct Overlay {
     work: RECT,
     line_mask: Option<TextMask>,
     body_mask: Option<TextMask>,
+    /// When set, the overlay falls back to the status panel instead of hiding.
+    panel: Option<Panel>,
+}
+
+struct Panel {
+    stats: Arc<Stats>,
+    paused: Arc<AtomicBool>,
+    heard: String,
+    addressed: bool,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -111,6 +125,7 @@ impl Overlay {
                 work: RECT::default(),
                 line_mask: None,
                 body_mask: None,
+                panel: None,
             })
         }
     }
@@ -140,7 +155,62 @@ impl Overlay {
         }
     }
 
+    /// Keep the status panel on screen whenever nothing else is showing.
+    pub fn keep_panel(&mut self, stats: Arc<Stats>, paused: Arc<AtomicBool>) {
+        self.panel = Some(Panel {
+            stats,
+            paused,
+            heard: String::new(),
+            addressed: false,
+        });
+        self.show_panel();
+    }
+
+    /// Update the "last heard" line of the status panel.
+    pub fn set_heard(&mut self, text: &str, addressed: bool) {
+        if let Some(p) = &mut self.panel {
+            p.heard = text.to_string();
+            p.addressed = addressed;
+            if self.mode == Mode::Idle {
+                self.show_panel();
+            }
+        }
+    }
+
+    fn panel_status(&self) -> String {
+        let Some(p) = &self.panel else {
+            return String::new();
+        };
+        let state = if p.paused.load(Ordering::Relaxed) {
+            "Paused"
+        } else if !p.stats.ready.load(Ordering::Relaxed) {
+            "Starting…"
+        } else if p.stats.transcribing.load(Ordering::Relaxed) {
+            "Transcribing…"
+        } else if p.stats.in_speech.load(Ordering::Relaxed) {
+            "Hearing you…"
+        } else {
+            "Listening · say \"Vexa\" and a question"
+        };
+        format!("Vexa · {state}")
+    }
+
+    fn show_panel(&mut self) {
+        let Some(p) = &self.panel else { return };
+        let body = match (p.heard.is_empty(), p.addressed) {
+            (true, _) => String::new(),
+            (false, true) => format!("Heard (for Vexa): \u{201c}{}\u{201d}", p.heard),
+            (false, false) => format!("Heard: \u{201c}{}\u{201d}", p.heard),
+        };
+        let line = self.panel_status();
+        self.set(Mode::Idle, Tone::Normal, &line, &body, None, false);
+    }
+
     pub fn hide(&mut self) {
+        if self.panel.is_some() {
+            self.show_panel();
+            return;
+        }
         self.mode = Mode::Hidden;
         self.hide_at = None;
         self.fade_from = None;
@@ -198,6 +268,13 @@ impl Overlay {
             self.hide();
             return;
         }
+        if self.mode == Mode::Idle {
+            let status = self.panel_status();
+            if status != self.line {
+                self.line = status;
+                self.layout_text();
+            }
+        }
         self.render();
     }
 
@@ -245,7 +322,7 @@ impl Overlay {
                 let line_w = self.line_mask.as_ref().map_or(0, |m| m.w + self.px(14.0));
                 (self.px(96.0) + line_w + pad, self.px(48.0))
             }
-            Mode::Card => {
+            Mode::Card | Mode::Idle => {
                 let mut h = pad + wave_h;
                 if let Some(m) = &self.line_mask {
                     h += self.px(8.0) + m.h;
@@ -318,13 +395,20 @@ impl Overlay {
         let bar_w = (gap * 0.55).max(2.0);
         let max_h = self.px(22.0) as f32;
         let speed = if self.lively { 7.0 } else { 2.2 };
+        let mic = match (&self.panel, self.mode) {
+            (Some(p), Mode::Idle) => Some(p.stats.level()),
+            _ => None,
+        };
         for i in 0..bars {
             let fi = i as f32;
             let centre =
                 1.0 - ((fi - (bars as f32 - 1.0) / 2.0).abs() / (bars as f32 / 2.0)).powf(1.6);
             let wobble = ((t * speed + fi * 0.62).sin() * 0.5 + 0.5) * 0.7
                 + ((t * speed * 0.47 + fi * 1.3).sin() * 0.5 + 0.5) * 0.3;
-            let amp = if self.lively {
+            let amp = if let Some(level) = mic {
+                // Live microphone meter.
+                0.12 + 0.88 * level * (0.55 + 0.45 * wobble)
+            } else if self.lively {
                 0.25 + 0.75 * wobble
             } else {
                 0.3 + 0.25 * wobble
@@ -355,7 +439,7 @@ impl Overlay {
                     blit_mask(&mut pm, m, self.px(96.0), (h - m.h) / 2, [205, 205, 220]);
                 }
             }
-            Mode::Card => {
+            Mode::Card | Mode::Idle => {
                 let pad = self.px(18.0);
                 let mut y = pad + self.px(26.0);
                 if let Some(m) = &self.line_mask {

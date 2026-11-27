@@ -49,6 +49,7 @@ pub struct Stats {
 
 impl Stats {
     /// Smoothed microphone level, 0.0-1.0.
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub fn level(&self) -> f32 {
         f32::from_bits(self.level.load(Ordering::Relaxed))
     }
