@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{Sample, SampleFormat};
+use cpal::{ErrorKind, Sample, SampleFormat};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
@@ -107,8 +107,18 @@ fn open_stream(
     let format = supported.sample_format();
     let config: cpal::StreamConfig = supported.into();
 
-    let err_fn = move |_e| {
-        let _ = err_tx.send(());
+    // Only errors that leave the stream dead need a rebuild. Others (route changes, glitches,
+    // real-time priority refused) are informational and the stream keeps running.
+    let err_fn = move |e: cpal::Error| {
+        if matches!(
+            e.kind(),
+            ErrorKind::DeviceNotAvailable
+                | ErrorKind::StreamInvalidated
+                | ErrorKind::HostUnavailable
+                | ErrorKind::PermissionDenied
+        ) {
+            let _ = err_tx.send(());
+        }
     };
 
     macro_rules! build {
