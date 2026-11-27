@@ -67,6 +67,11 @@ pub fn ensure_model(name: &str, mut progress: impl FnMut(u64, u64)) -> Result<Pa
     Ok(path)
 }
 
+/// Spelling and style hints for speech recognition.
+#[cfg(feature = "stt")]
+const STT_PROMPT: &str = "Hey Vexa, what's the weather in Sydney? Why was that, Vexa? \
+Vexa, what did Nvidia, Apple, Microsoft, Tesla, Amazon, Google and AMD close at on Friday?";
+
 #[cfg(feature = "stt")]
 pub struct Stt {
     state: whisper_rs::WhisperState,
@@ -105,8 +110,9 @@ impl Stt {
         p.set_print_progress(false);
         p.set_print_realtime(false);
         p.set_print_timestamps(false);
-        // Bias recognition towards the wake word so it is spelled consistently.
-        p.set_initial_prompt("Hey Vexa.");
+        // Example text in the style we expect biases spelling towards the wake word and the names
+        // people ask about most, which the small model otherwise mangles ("Envady", "mixer").
+        p.set_initial_prompt(STT_PROMPT);
         // whisper normally encodes a full 30 s window. Encoding only what we have (plus margin)
         // makes short commands several times faster on CPU.
         let secs = audio.len() as f32 / 16_000.0;
