@@ -111,12 +111,14 @@ pub fn run() -> Result<()> {
 
     // Pipeline (loads the model, which may download on first run)
     let paused = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(engine::Stats::default());
     {
         let ui = ui.clone();
         let paused = paused.clone();
         let cfg = cfg.clone();
+        let stats = stats.clone();
         std::thread::spawn(move || {
-            if let Err(e) = engine::start(cfg, ui.clone(), paused) {
+            if let Err(e) = engine::start(cfg, ui.clone(), paused, stats) {
                 ui.send(UiEvent::Error(format!(
                     "Vexa could not start listening: {e}"
                 )));
@@ -243,6 +245,7 @@ fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, stat
             tts.stop();
             overlay.hide();
         }
+        UiEvent::Heard { .. } => {}
     }
 }
 

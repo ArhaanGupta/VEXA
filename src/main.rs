@@ -71,11 +71,22 @@ fn run_app() -> Result<()> {
                 UiEvent::Answer { text, .. } => println!("{text}\n"),
                 UiEvent::Error(e) => eprintln!("error: {e}"),
                 UiEvent::Stop => println!("(stopped)"),
+                UiEvent::Heard { text, addressed } => {
+                    println!(
+                        "heard{}: {text}",
+                        if addressed { " (for Vexa)" } else { "" }
+                    )
+                }
             }
         }
     }
     let paused = Arc::new(AtomicBool::new(false));
-    engine::start(config::Config::load(), Arc::new(ConsoleUi), paused)?;
+    engine::start(
+        config::Config::load(),
+        Arc::new(ConsoleUi),
+        paused,
+        Arc::new(engine::Stats::default()),
+    )?;
     loop {
         std::thread::park();
     }

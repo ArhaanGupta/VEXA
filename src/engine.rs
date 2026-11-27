@@ -9,7 +9,7 @@ use crate::stt::Stt;
 use crate::wake::{self, Control, Wake};
 use anyhow::Result;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -34,6 +34,28 @@ pub enum UiEvent {
     Stop,
     /// The pipeline is up and listening.
     Ready,
+    /// Text recognised from one utterance (shown on screen only, never stored).
+    Heard { text: String, addressed: bool },
+}
+
+/// Live pipeline state the UI can poll each frame without extra messages.
+#[derive(Default)]
+pub struct Stats {
+    level: AtomicU32,
+    pub in_speech: AtomicBool,
+    pub transcribing: AtomicBool,
+    pub ready: AtomicBool,
+}
+
+impl Stats {
+    /// Smoothed microphone level, 0.0-1.0.
+    pub fn level(&self) -> f32 {
+        f32::from_bits(self.level.load(Ordering::Relaxed))
+    }
+
+    fn set_level(&self, v: f32) {
+        self.level.store(v.to_bits(), Ordering::Relaxed);
+    }
 }
 
 pub trait Ui: Send + Sync + 'static {
@@ -49,7 +71,12 @@ macro_rules! debug {
 }
 
 /// Start the pipeline on background threads. Returns once the microphone is open.
-pub fn start(cfg: Config, ui: Arc<dyn Ui>, paused: Arc<AtomicBool>) -> Result<()> {
+pub fn start(
+    cfg: Config,
+    ui: Arc<dyn Ui>,
+    paused: Arc<AtomicBool>,
+    stats: Arc<Stats>,
+) -> Result<()> {
     let ui2 = ui.clone();
     let model = crate::stt::ensure_model(&cfg.stt_model, |done, total| {
         let mb = |b: u64| b / (1024 * 1024);
@@ -74,13 +101,16 @@ pub fn start(cfg: Config, ui: Arc<dyn Ui>, paused: Arc<AtomicBool>) -> Result<()
         threshold: cfg.vad_threshold,
         ..Default::default()
     };
+    let vad_stats = stats.clone();
     thread::Builder::new()
         .name("vexa-vad".into())
-        .spawn(move || vad_loop(mic.rx, utt_tx, paused, vad_cfg))?;
+        .spawn(move || vad_loop(mic.rx, utt_tx, paused, vad_cfg, vad_stats))?;
     let ui3 = ui.clone();
+    let stt_stats = stats.clone();
     thread::Builder::new()
         .name("vexa-stt".into())
-        .spawn(move || stt_loop(stt, utt_rx, ui3))?;
+        .spawn(move || stt_loop(stt, utt_rx, ui3, stt_stats))?;
+    stats.ready.store(true, Ordering::Relaxed);
     ui.send(UiEvent::Ready);
     Ok(())
 }
@@ -90,7 +120,9 @@ fn vad_loop(
     tx: SyncSender<Vec<f32>>,
     paused: Arc<AtomicBool>,
     cfg: SegmenterConfig,
+    stats: Arc<Stats>,
 ) {
+    let mut level = 0f32;
     let mut detector = earshot::Detector::default();
     let mut seg = Segmenter::new(cfg);
     let mut pending: Vec<f32> = Vec::with_capacity(FRAME * 8);
@@ -100,6 +132,8 @@ fn vad_loop(
             seg.reset();
             detector.reset();
             pending.clear();
+            stats.set_level(0.0);
+            stats.in_speech.store(false, Ordering::Relaxed);
             continue;
         }
         pending.extend_from_slice(&chunk);
@@ -109,8 +143,19 @@ fn vad_loop(
                 *dst = src.clamp(-1.0, 1.0);
             }
             used += FRAME;
+            // Level meter: fast attack, slow release, perceptual (square-root) scale.
+            let rms = (frame.iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt();
+            let target = (rms * 10.0).sqrt().min(1.0);
+            level = if target > level {
+                target
+            } else {
+                level * 0.9 + target * 0.1
+            };
+            stats.set_level(level);
             let score = detector.predict_f32(&frame);
-            if let Some(utterance) = seg.push(&frame, score) {
+            let utterance = seg.push(&frame, score);
+            stats.in_speech.store(seg.in_speech(), Ordering::Relaxed);
+            if let Some(utterance) = utterance {
                 match tx.try_send(utterance) {
                     Ok(()) => {}
                     // Speech-to-text is still busy with earlier speech: drop rather than lag behind.
@@ -123,11 +168,14 @@ fn vad_loop(
     }
 }
 
-fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>) {
+fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<Stats>) {
     let mut armed_until: Option<Instant> = None;
     while let Ok(audio) = rx.recv() {
         let started = Instant::now();
-        let text = match stt.transcribe(&audio) {
+        stats.transcribing.store(true, Ordering::Relaxed);
+        let result = stt.transcribe(&audio);
+        stats.transcribing.store(false, Ordering::Relaxed);
+        let text = match result {
             Ok(t) => t,
             Err(e) => {
                 debug!("stt error: {e}");
@@ -137,7 +185,16 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>) {
         drop(audio);
         debug!("heard ({} ms): {text:?}", started.elapsed().as_millis());
 
-        let request = match wake::detect(&text) {
+        let wake = wake::detect(&text);
+        let cleaned = wake::clean_transcript(&text);
+        if !cleaned.is_empty() {
+            ui.send(UiEvent::Heard {
+                text: cleaned,
+                addressed: wake != Wake::None,
+            });
+        }
+
+        let request = match wake {
             Wake::Request(r) => Some(r),
             Wake::WakeOnly => {
                 armed_until = Some(Instant::now() + ARMED_WINDOW);

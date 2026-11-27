@@ -67,6 +67,11 @@ impl Segmenter {
         }
     }
 
+    /// Whether an utterance is currently being captured.
+    pub fn in_speech(&self) -> bool {
+        self.in_speech
+    }
+
     /// Feed one frame and its VAD score. Returns a finished utterance when one closes.
     pub fn push(&mut self, frame: &[f32; FRAME], score: f32) -> Option<Vec<f32>> {
         let speech = score >= self.cfg.threshold;
