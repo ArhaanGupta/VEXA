@@ -154,19 +154,33 @@ impl Conversation {
     }
 }
 
-/// Build the message list: earlier turns as plain text, then the new question.
-pub fn build_messages(history: &[(String, String)], request: &str) -> Vec<Value> {
-    let mut messages = Vec::with_capacity(history.len() * 2 + 1);
+/// Build the message list: earlier turns as plain text, then the new question, then the current
+/// time as a system message. The time lives here rather than in the system prompt so the system
+/// prompt and tools stay byte-identical between requests and can be cached.
+pub fn build_messages(
+    history: &[(String, String)],
+    request: &str,
+    now: chrono::DateTime<chrono::Local>,
+) -> Vec<Value> {
+    let mut messages = Vec::with_capacity(history.len() * 2 + 2);
     for (q, a) in history {
         messages.push(json!({ "role": "user", "content": q }));
         messages.push(json!({ "role": "assistant", "content": a }));
     }
     messages.push(json!({ "role": "user", "content": request }));
+    messages.push(json!({
+        "role": "system",
+        "content": format!(
+            "Current local date and time: {} (UTC{}).",
+            now.format("%A %-d %B %Y, %-I:%M %p"),
+            now.format("%:z"),
+        ),
+    }));
     messages
 }
 
-pub fn system_prompt(now: chrono::DateTime<chrono::Local>) -> String {
-    format!(
+pub fn system_prompt() -> String {
+    String::from(
         "You are a voice assistant running in the background on the user's computer. \
 The user asked out loud while doing something else. Your reply is read aloud, so it must be short.\n\
 \n\
@@ -194,9 +208,7 @@ aggregators, blogs, forums and trading-app marketing sites.\n\
 you could only find a weak source, say so in a few words instead of guessing.\n\
 - Be quick: one search is usually enough. Do not write anything before or between tool calls.\n\
 \n\
-Current local date and time: {} (UTC{}).",
-        now.format("%A %-d %B %Y, %-I:%M %p"),
-        now.format("%:z"),
+The current local date and time are given in a system message after the user's question.",
     )
 }
 
@@ -228,7 +240,8 @@ impl Claude {
         let mut body = json!({
             "model": self.model,
             "max_tokens": 16000,
-            "system": system,
+            // Cache the tools and system prompt: they are identical on every request.
+            "system": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }],
             // Low effort keeps voice answers fast; web search still runs when needed.
             "output_config": { "effort": self.effort },
             "tools": tools,
@@ -275,8 +288,8 @@ impl Claude {
     /// Ask one question and return a speakable answer.
     /// Ask a question, with earlier turns of the conversation as context.
     pub fn ask(&self, request: &str, history: &[(String, String)]) -> Result<Answer, ClaudeError> {
-        let system = system_prompt(chrono::Local::now());
-        let mut messages = build_messages(history, request);
+        let system = system_prompt();
+        let mut messages = build_messages(history, request, chrono::Local::now());
         let mut usage = Usage::default();
         for _ in 0..=MAX_CONTINUATIONS {
             let resp = self.post(&self.build_request(&messages, &system))?;
@@ -428,11 +441,18 @@ mod tests {
         let t0 = std::time::Instant::now();
         let mut c = Conversation::new();
         c.record("price of nvidia".into(), "165 dollars".into(), t0);
-        let msgs = build_messages(&c.history(t0), "why was that?");
-        assert_eq!(msgs.len(), 3);
+        let msgs = build_messages(&c.history(t0), "why was that?", chrono::Local::now());
+        assert_eq!(msgs.len(), 4);
         assert_eq!(msgs[0]["content"], "price of nvidia");
         assert_eq!(msgs[1]["role"], "assistant");
         assert_eq!(msgs[2]["content"], "why was that?");
+        assert_eq!(msgs[3]["role"], "system");
+        assert!(
+            msgs[3]["content"]
+                .as_str()
+                .unwrap()
+                .starts_with("Current local date")
+        );
     }
 
     #[test]
@@ -505,6 +525,8 @@ mod tests {
         assert_eq!(body["tools"][1]["type"], "web_search_20260209");
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["fallbacks"], "default");
+        assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
+        assert_eq!(system_prompt(), system_prompt());
         assert!(body.get("thinking").is_none());
         assert!(body.get("temperature").is_none());
     }
