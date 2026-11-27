@@ -37,7 +37,14 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 fn run_app() -> Result<()> {
-    win::run()
+    // Release builds have no console, so show crashes and start-up errors in a dialog.
+    std::panic::set_hook(Box::new(|info| {
+        win::message_box(&format!("Vexa stopped unexpectedly.\n\n{info}"));
+    }));
+    if let Err(e) = win::run() {
+        win::message_box(&format!("Vexa could not start.\n\n{e:#}"));
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]

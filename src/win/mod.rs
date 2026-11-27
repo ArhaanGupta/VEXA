@@ -61,6 +61,10 @@ pub fn run() -> Result<()> {
         // The handle is intentionally never closed: it lives as long as the process.
         let _mutex = CreateMutexW(None, true, w!("Local\\VexaSingleInstance"))?;
         if GetLastError() == ERROR_ALREADY_EXISTS {
+            message_box(
+                "Vexa is already running.\n\nLook for its icon in the system tray: click the ^ arrow \
+                 next to the clock. Right-click the icon for settings or to quit.",
+            );
             return Ok(());
         }
     }
@@ -239,6 +243,22 @@ fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, stat
             tts.stop();
             overlay.hide();
         }
+    }
+}
+
+/// Show a simple message dialog (used where there is no console to print to).
+pub fn message_box(text: &str) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW,
+    };
+    let wide: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+    unsafe {
+        MessageBoxW(
+            None,
+            PCWSTR(wide.as_ptr()),
+            w!("Vexa"),
+            MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND,
+        );
     }
 }
 
