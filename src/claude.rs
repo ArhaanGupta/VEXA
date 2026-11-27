@@ -182,7 +182,9 @@ markets are closed at weekends: \"Markets were closed on Sunday; Nvidia closed a
 - Never say your own name.\n\
 \n\
 Accuracy:\n\
-- Use web search for anything current: prices, markets, news, weather, flights, sports, schedules.\n\
+- For stock, index, ETF or crypto prices, use the stock_prices tool, not web search: it is faster \
+and exact. Use web search only for the reasons behind a move or other news.\n\
+- Use web search for anything else current: news, weather, flights, sports, schedules.\n\
 - Trust only reputable sources: official and primary sources (exchanges, company filings and \
 investor relations, government agencies), established news organisations (Reuters, AP, Bloomberg, \
 Financial Times, Wall Street Journal, CNBC, BBC, New York Times) and established data providers \
@@ -190,7 +192,7 @@ Financial Times, Wall Street Journal, CNBC, BBC, New York Times) and established
 aggregators, blogs, forums and trading-app marketing sites.\n\
 - For numbers, prefer a source that states the figure directly. If reputable sources disagree or \
 you could only find a weak source, say so in a few words instead of guessing.\n\
-- Be quick: one or two searches is usually enough.\n\
+- Be quick: one search is usually enough. Do not write anything before or between tool calls.\n\
 \n\
 Current local date and time: {} (UTC{}).",
         now.format("%A %-d %B %Y, %-I:%M %p"),
@@ -221,15 +223,15 @@ impl Claude {
             // Filters search results with code before they enter the context: fewer tokens.
             "web_search_20260209"
         };
+        let mut tools = crate::tools::definitions();
+        tools.push(json!({ "type": search_tool, "name": "web_search", "max_uses": 3 }));
         let mut body = json!({
             "model": self.model,
             "max_tokens": 16000,
             "system": system,
             // Low effort keeps voice answers fast; web search still runs when needed.
             "output_config": { "effort": self.effort },
-            "tools": [
-                { "type": search_tool, "name": "web_search", "max_uses": 3 }
-            ],
+            "tools": tools,
             "messages": messages,
         });
         if !self.is_haiku() {
@@ -275,7 +277,6 @@ impl Claude {
     pub fn ask(&self, request: &str, history: &[(String, String)]) -> Result<Answer, ClaudeError> {
         let system = system_prompt(chrono::Local::now());
         let mut messages = build_messages(history, request);
-        let base_len = messages.len();
         let mut usage = Usage::default();
         for _ in 0..=MAX_CONTINUATIONS {
             let resp = self.post(&self.build_request(&messages, &system))?;
@@ -286,9 +287,29 @@ impl Claude {
             match resp["stop_reason"].as_str() {
                 Some("pause_turn") => {
                     // Resume the server-side tool loop: resend with the partial assistant turn.
-                    messages.truncate(base_len);
-                    messages
-                        .push(json!({ "role": "assistant", "content": resp["content"].clone() }));
+                    append_assistant(&mut messages, &resp["content"]);
+                    continue;
+                }
+                Some("tool_use") => {
+                    // Run our own tools and send the results back, keeping the assistant turn as is.
+                    append_assistant(&mut messages, &resp["content"]);
+                    let results: Vec<Value> = resp["content"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|b| b["type"] == "tool_use")
+                        .map(|b| {
+                            let (text, is_error) =
+                                crate::tools::run(b["name"].as_str().unwrap_or(""), &b["input"]);
+                            json!({
+                                "type": "tool_result",
+                                "tool_use_id": b["id"],
+                                "content": text,
+                                "is_error": is_error,
+                            })
+                        })
+                        .collect();
+                    messages.push(json!({ "role": "user", "content": results }));
                     continue;
                 }
                 Some("refusal") => return Err(ClaudeError::Refused),
@@ -303,6 +324,20 @@ impl Claude {
         }
         Err(ClaudeError::Other(anyhow!("the search took too long")))
     }
+}
+
+/// Add assistant content to the conversation, continuing the assistant turn if the last message
+/// already is one (a resumed `pause_turn`).
+fn append_assistant(messages: &mut Vec<Value>, content: &Value) {
+    let blocks = content.as_array().cloned().unwrap_or_default();
+    if let Some(last) = messages.last_mut()
+        && last["role"] == "assistant"
+        && let Some(existing) = last["content"].as_array_mut()
+    {
+        existing.extend(blocks);
+        return;
+    }
+    messages.push(json!({ "role": "assistant", "content": blocks }));
 }
 
 /// The final answer of a Messages API response: the text blocks after the last tool call.
@@ -435,8 +470,17 @@ mod tests {
     fn haiku_request_uses_basic_search_and_no_fallbacks() {
         let c = Claude::with_model("k".into(), "claude-haiku-5-5");
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
-        assert_eq!(body["tools"][0]["type"], "web_search_20250305");
+        assert_eq!(body["tools"][1]["type"], "web_search_20250305");
         assert!(body.get("fallbacks").is_none());
+    }
+
+    #[test]
+    fn resumed_turn_extends_the_assistant_message() {
+        let mut m = vec![json!({ "role": "user", "content": "q" })];
+        append_assistant(&mut m, &json!([{ "type": "text", "text": "a" }]));
+        append_assistant(&mut m, &json!([{ "type": "text", "text": "b" }]));
+        assert_eq!(m.len(), 2);
+        assert_eq!(m[1]["content"].as_array().unwrap().len(), 2);
     }
 
     #[test]
@@ -457,7 +501,8 @@ mod tests {
         let c = Claude::with_model("k".into(), MODEL);
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
         assert_eq!(body["model"], MODEL);
-        assert_eq!(body["tools"][0]["type"], "web_search_20260209");
+        assert_eq!(body["tools"][0]["name"], "stock_prices");
+        assert_eq!(body["tools"][1]["type"], "web_search_20260209");
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["fallbacks"], "default");
         assert!(body.get("thinking").is_none());

@@ -9,6 +9,7 @@ mod http;
 mod secrets;
 mod segmenter;
 mod stt;
+mod tools;
 mod wake;
 mod wav;
 
