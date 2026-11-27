@@ -1,0 +1,52 @@
+[package]
+name = "vexa"
+version = "0.1.0"
+edition = "2024"
+description = "Vexa - an always-listening, privacy-first voice assistant for your PC, powered by Claude."
+license = "Apache-2.0"
+repository = "https://github.com/ArhaanGupta/VEXA"
+
+[features]
+default = ["stt"]
+# Local speech-to-text via whisper.cpp. Disable only for quick cross-compile checks.
+stt = ["dep:whisper-rs"]
+
+[dependencies]
+anyhow = "1.0.105"
+chrono = "0.4.45"
+cpal = "0.18"
+earshot = "1.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+ureq = { version = "3", default-features = false, features = ["json", "gzip"] }
+whisper-rs = { version = "0.16", optional = true }
+
+[target.'cfg(not(windows))'.dependencies]
+ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[target.'cfg(windows)'.dependencies]
+# Windows' own TLS stack (SChannel): smaller binary, uses the system certificate store.
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
+tray-icon = "0.27"
+tiny-skia = "0.12"
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Speech",
+    "Win32_Security",
+    "Win32_Security_Credentials",
+    "Win32_System_Com",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
+panic = "abort"

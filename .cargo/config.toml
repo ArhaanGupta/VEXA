@@ -1,0 +1,10 @@
+[env]
+# whisper.cpp build settings. Target any CPU with AVX2 (Intel 2013+, AMD 2015+) rather than the
+# build machine's CPU, so release builds run on users' laptops.
+GGML_NATIVE = "OFF"
+GGML_AVX = "ON"
+GGML_AVX2 = "ON"
+GGML_FMA = "ON"
+GGML_F16C = "ON"
+# Use the pre-generated bindings so building does not require LLVM/libclang.
+WHISPER_DONT_GENERATE_BINDINGS = "1"
