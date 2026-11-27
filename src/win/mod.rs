@@ -186,6 +186,7 @@ pub fn run() -> Result<()> {
                     engine::dispatch(
                         "What is today's date, and what is the weather in Sydney right now?".into(),
                         ui.clone(),
+                        None,
                     );
                 } else if ev.id == autostart_item.id() {
                     let on = autostart_item.is_checked();
@@ -256,11 +257,11 @@ fn handle(
         UiEvent::Answer {
             request,
             text,
-            usage,
+            details,
         } => {
-            // While testing, show what each answer cost alongside the question.
+            // While testing, show how long each step took and what it cost.
             let request = if cfg.always_show {
-                format!("{usage} \u{00b7} {request}")
+                format!("{details} \u{00b7} {request}")
             } else {
                 request
             };

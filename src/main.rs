@@ -68,8 +68,8 @@ fn run_app() -> Result<()> {
                 }
                 UiEvent::Listening => println!("(listening…)"),
                 UiEvent::Working { request } => println!("> {request}"),
-                UiEvent::Answer { text, usage, .. } => {
-                    println!("{text}\n({usage})\n");
+                UiEvent::Answer { text, details, .. } => {
+                    println!("{text}\n({details})\n");
                     self.0.open_follow_up(10);
                 }
                 UiEvent::Error(e) => eprintln!("error: {e}"),

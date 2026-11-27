@@ -30,8 +30,8 @@ pub enum UiEvent {
     Answer {
         request: String,
         text: String,
-        /// Tokens, searches and estimated cost of this answer.
-        usage: String,
+        /// Timings, tokens, searches and estimated cost of this answer.
+        details: String,
     },
     /// Something failed; shown briefly.
     Error(String),
@@ -263,7 +263,8 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<St
             }
         };
         drop(audio);
-        debug!("heard ({} ms): {text:?}", started.elapsed().as_millis());
+        let stt_time = started.elapsed();
+        debug!("heard ({} ms): {text:?}", stt_time.as_millis());
 
         let wake = wake::detect(&text);
         let cleaned = wake::clean_transcript(&text);
@@ -302,7 +303,7 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<St
             ui.send(UiEvent::Stop);
             continue;
         }
-        dispatch(request, ui.clone());
+        dispatch(request, ui.clone(), Some(stt_time));
     }
 }
 
@@ -311,7 +312,8 @@ static CONVERSATION: std::sync::Mutex<crate::claude::Conversation> =
     std::sync::Mutex::new(crate::claude::Conversation::new());
 
 /// Run a request on its own thread so listening never waits on the network.
-pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
+/// `stt_time` is how long transcription took, shown with the answer while testing.
+pub fn dispatch(request: String, ui: Arc<dyn Ui>, stt_time: Option<Duration>) {
     let _ = thread::Builder::new()
         .name("vexa-task".into())
         .spawn(move || {
@@ -341,10 +343,19 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
                     if let Ok(mut c) = CONVERSATION.lock() {
                         c.record(request.clone(), a.text.clone(), Instant::now());
                     }
+                    let mut details = String::new();
+                    if let Some(t) = stt_time {
+                        details.push_str(&format!("heard {:.1}s \u{00b7} ", t.as_secs_f32()));
+                    }
+                    details.push_str(&format!(
+                        "answered {:.1}s \u{00b7} {}",
+                        started.elapsed().as_secs_f32(),
+                        a.usage.summary()
+                    ));
                     ui.send(UiEvent::Answer {
                         request,
                         text: a.text,
-                        usage: a.usage.summary(),
+                        details,
                     });
                 }
                 Err(e) => ui.send(UiEvent::Error(e.to_string())),
