@@ -58,7 +58,7 @@ fn run_app() -> Result<()> {
     use engine::{Ui, UiEvent};
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    struct ConsoleUi;
+    struct ConsoleUi(Arc<engine::Stats>);
     impl Ui for ConsoleUi {
         fn send(&self, ev: UiEvent) {
             match ev {
@@ -68,7 +68,10 @@ fn run_app() -> Result<()> {
                 }
                 UiEvent::Listening => println!("(listening…)"),
                 UiEvent::Working { request } => println!("> {request}"),
-                UiEvent::Answer { text, .. } => println!("{text}\n"),
+                UiEvent::Answer { text, .. } => {
+                    println!("{text}\n");
+                    self.0.open_follow_up(10);
+                }
                 UiEvent::Error(e) => eprintln!("error: {e}"),
                 UiEvent::Stop => println!("(stopped)"),
                 UiEvent::Heard { text, addressed } => {
@@ -81,11 +84,12 @@ fn run_app() -> Result<()> {
         }
     }
     let paused = Arc::new(AtomicBool::new(false));
+    let stats = Arc::new(engine::Stats::default());
     engine::start(
         config::Config::load(),
-        Arc::new(ConsoleUi),
+        Arc::new(ConsoleUi(stats.clone())),
         paused,
-        Arc::new(engine::Stats::default()),
+        stats,
     )?;
     loop {
         std::thread::park();

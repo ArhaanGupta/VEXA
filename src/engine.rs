@@ -50,6 +50,10 @@ pub struct Stats {
     last_audio_ms: AtomicU64,
     /// The mic has delivered exact digital silence for a while (typically blocked by privacy settings).
     silent: AtomicBool,
+    /// An answer is being read aloud; what the mic hears is probably Vexa itself.
+    speaking: AtomicBool,
+    /// Until when an utterance without the wake word counts as a follow-up (ms since epoch).
+    follow_up_until_ms: AtomicU64,
 }
 
 fn now_ms() -> u64 {
@@ -68,6 +72,27 @@ impl Stats {
 
     fn set_level(&self, v: f32) {
         self.level.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Mark whether an answer is currently being read aloud.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn set_speaking(&self, on: bool) {
+        self.speaking.store(on, Ordering::Relaxed);
+    }
+
+    /// Accept one follow-up question without the wake word for the next `secs` seconds.
+    pub fn open_follow_up(&self, secs: u64) {
+        self.follow_up_until_ms
+            .store(now_ms() + secs * 1000, Ordering::Relaxed);
+    }
+
+    fn close_follow_up(&self) {
+        self.follow_up_until_ms.store(0, Ordering::Relaxed);
+    }
+
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn follow_up_open(&self) -> bool {
+        now_ms() < self.follow_up_until_ms.load(Ordering::Relaxed)
     }
 
     /// Name of the microphone in use.
@@ -251,16 +276,22 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<St
                 ui.send(UiEvent::Listening);
                 None
             }
-            Wake::None => match armed_until.take() {
-                Some(until) if Instant::now() < until => {
-                    let t = wake::clean_transcript(&text);
-                    (!t.is_empty()).then_some(t)
-                }
-                _ => None,
-            },
+            // Without the wake word, only accept speech right after "Hey Vexa" or an answer,
+            // and never while an answer is being read aloud (that is Vexa hearing itself).
+            Wake::None if stats.speaking.load(Ordering::Relaxed) => None,
+            Wake::None => {
+                let armed = armed_until
+                    .take()
+                    .is_some_and(|until| Instant::now() < until);
+                let follow_up = stats.follow_up_open() && wake::is_follow_up(&text);
+                (armed || follow_up)
+                    .then(|| wake::clean_transcript(&text))
+                    .filter(|t| !t.is_empty())
+            }
         };
         let Some(request) = request else { continue };
         armed_until = None;
+        stats.close_follow_up();
 
         if wake::control(&request) == Some(Control::Stop) {
             ui.send(UiEvent::Stop);

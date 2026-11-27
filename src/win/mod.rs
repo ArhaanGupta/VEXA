@@ -32,6 +32,8 @@ use windows::core::{PCWSTR, w};
 
 const WM_VEXA_EVENT: u32 = WM_APP + 1;
 const WM_VEXA_TTS_DONE: u32 = WM_APP + 2;
+/// How long after an answer a question without "Vexa" still counts as a follow-up.
+const FOLLOW_UP_SECS: u64 = 8;
 
 /// Posts pipeline events to the UI thread.
 struct WinUi {
@@ -154,10 +156,14 @@ pub fn run() -> Result<()> {
                     WM_TIMER if msg.wParam.0 == ANIM_TIMER => overlay.tick(),
                     WM_VEXA_EVENT => {
                         for ev in rx.try_iter() {
-                            handle(ev, &mut overlay, &tts, &cfg, &status);
+                            handle(ev, &mut overlay, &tts, &cfg, &status, &stats);
                         }
                     }
-                    WM_VEXA_TTS_DONE => overlay.speech_done(Duration::from_secs(3)),
+                    WM_VEXA_TTS_DONE => {
+                        stats.set_speaking(false);
+                        stats.open_follow_up(FOLLOW_UP_SECS);
+                        overlay.speech_done(Duration::from_secs(3));
+                    }
                     settings::WM_SETTINGS_SAVED => cfg = Config::load(),
                     _ => {
                         let _ = TranslateMessage(&msg);
@@ -213,7 +219,14 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, status: &MenuItem) {
+fn handle(
+    ev: UiEvent,
+    overlay: &mut Overlay,
+    tts: &tts::Tts,
+    cfg: &Config,
+    status: &MenuItem,
+    stats: &engine::Stats,
+) {
     match ev {
         UiEvent::Status(s) => {
             status.set_text(format!("Vexa: {s}"));
@@ -242,11 +255,13 @@ fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, stat
         }
         UiEvent::Answer { request, text } => {
             if cfg.speak_answers {
+                stats.set_speaking(true);
                 tts.speak(&text);
                 overlay.show_card(&request, &text, Tone::Normal, None, true);
             } else {
                 let words = text.split_whitespace().count() as u64;
                 let read = Duration::from_millis((words * 320).clamp(5_000, 20_000));
+                stats.open_follow_up(FOLLOW_UP_SECS + read.as_secs());
                 overlay.show_card(&request, &text, Tone::Normal, Some(read), false);
             }
         }
@@ -255,6 +270,7 @@ fn handle(ev: UiEvent, overlay: &mut Overlay, tts: &tts::Tts, cfg: &Config, stat
         }
         UiEvent::Stop => {
             tts.stop();
+            stats.set_speaking(false);
             overlay.hide();
         }
         UiEvent::Heard { text, addressed } => overlay.set_heard(&text, addressed),

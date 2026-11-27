@@ -137,6 +137,36 @@ pub fn detect(transcript: &str) -> Wake {
     Wake::Request(request)
 }
 
+/// Whether an utterance heard without the wake word, right after an answer, is a real follow-up
+/// question rather than a reaction ("thanks") or speech-recognition filler.
+pub fn is_follow_up(text: &str) -> bool {
+    let words: Vec<String> = clean_transcript(text)
+        .split_whitespace()
+        .map(norm)
+        .filter(|w| !w.is_empty())
+        .collect();
+    let joined = words.join(" ");
+    let reactions = [
+        "thank you",
+        "thanks",
+        "thank you very much",
+        "ok",
+        "okay",
+        "cool",
+        "nice",
+        "great",
+        "wow",
+        "bye",
+        "got it",
+        "alright",
+        "all right",
+        "yes",
+        "no",
+        "you",
+    ];
+    words.len() >= 2 && !reactions.contains(&joined.as_str())
+}
+
 /// Short commands that control Vexa itself rather than asking Claude anything.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Control {
@@ -222,6 +252,15 @@ mod tests {
             "hello there"
         );
         assert_eq!(detect("[BLANK_AUDIO]"), Wake::None);
+    }
+
+    #[test]
+    fn follow_ups() {
+        assert!(is_follow_up("Why was that?"));
+        assert!(is_follow_up("And what about AMD"));
+        assert!(!is_follow_up("Thank you."));
+        assert!(!is_follow_up("Okay"));
+        assert!(!is_follow_up("[BLANK_AUDIO]"));
     }
 
     #[test]

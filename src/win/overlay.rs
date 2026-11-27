@@ -195,6 +195,8 @@ impl Overlay {
             "Transcribing…".to_string()
         } else if p.stats.in_speech.load(Ordering::Relaxed) {
             "Hearing you…".to_string()
+        } else if p.stats.follow_up_open() {
+            "Listening for a follow-up (no need to say \"Vexa\")".to_string()
         } else {
             format!("Listening on {}", p.stats.mic_name())
         };
