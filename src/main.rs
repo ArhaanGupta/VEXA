@@ -19,6 +19,11 @@ use anyhow::Result;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Command-line modes print to the terminal they were started from.
+    #[cfg(windows)]
+    if !args.is_empty() {
+        win::attach_console();
+    }
     match args.first().map(String::as_str) {
         Some("--ask") => cli_ask(&args[1..].join(" ")),
         Some("--wav") => cli_wav(args.get(1).map(String::as_str).unwrap_or_default()),
@@ -37,6 +42,7 @@ fn main() -> Result<()> {
 
 #[cfg(windows)]
 fn run_app() -> Result<()> {
+    win::attach_console_if_debugging();
     // Release builds have no console, so show crashes and start-up errors in a dialog.
     std::panic::set_hook(Box::new(|info| {
         win::message_box(&format!("Vexa stopped unexpectedly.\n\n{info}"));

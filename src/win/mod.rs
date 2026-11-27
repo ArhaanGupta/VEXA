@@ -262,6 +262,21 @@ pub fn message_box(text: &str) {
     }
 }
 
+/// With VEXA_DEBUG set, print diagnostics to the terminal Vexa was started from.
+pub fn attach_console_if_debugging() {
+    if engine::debug_enabled() {
+        attach_console();
+    }
+}
+
+/// Send output to the terminal Vexa was started from, if any.
+pub fn attach_console() {
+    use windows::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+    unsafe {
+        let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
 /// Draw the tray icon: a violet disc with three wave bars (grey when paused).
 fn tray_icon_image(active: bool) -> Icon {
     use tiny_skia::{Color, FillRule, Paint, PathBuilder, Pixmap, Transform};
