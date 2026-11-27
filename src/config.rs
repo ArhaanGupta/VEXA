@@ -15,9 +15,10 @@ pub struct Config {
     pub stt_threads: usize,
     /// Voice-activity threshold (0-1). Raise it in noisy rooms.
     pub vad_threshold: f32,
-    /// Claude model that answers requests, e.g. "claude-opus-5-5", "claude-sonnet-5-5" or
-    /// "claude-haiku-5-5".
-    pub model: String,
+    /// Claude model override, e.g. "claude-opus-5-5" or "claude-haiku-5-5". Left out of the file
+    /// unless set, so the built-in default can improve with updates.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
     /// Keep a live status panel on screen (mic level, what was heard) instead of only showing
     /// up for requests. On while Vexa is being set up and tested.
     pub always_show: bool,
@@ -31,7 +32,7 @@ impl Default for Config {
             stt_threads: 0,
             vad_threshold: 0.5,
             always_show: true,
-            model: crate::claude::MODEL.into(),
+            model: None,
         }
     }
 }
@@ -69,6 +70,14 @@ impl Config {
         std::fs::create_dir_all(data_dir())?;
         std::fs::write(config_path(), serde_json::to_string_pretty(self)?)?;
         Ok(())
+    }
+
+    /// The Claude model to use: the override if set, otherwise the built-in default.
+    pub fn model(&self) -> String {
+        self.model
+            .clone()
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| crate::claude::MODEL.to_string())
     }
 
     pub fn stt_threads(&self) -> usize {

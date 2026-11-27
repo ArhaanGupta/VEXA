@@ -330,7 +330,7 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
                 .map(|mut c| c.history(started))
                 .unwrap_or_default();
             // Read settings per request so a model change applies without restarting.
-            let model = Config::load().model;
+            let model = Config::load().model();
             match Claude::with_model(key, &model).ask(&request, &history) {
                 Ok(a) => {
                     debug!(
