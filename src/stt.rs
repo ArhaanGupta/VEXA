@@ -84,7 +84,10 @@ impl Stt {
         use whisper_rs::{WhisperContext, WhisperContextParameters};
         // Route whisper.cpp's console output into the (silent) log facade.
         whisper_rs::install_logging_hooks();
-        let ctx = WhisperContext::new_with_params(path, WhisperContextParameters::default())
+        let mut params = WhisperContextParameters::default();
+        // Flash attention computes the same result with less memory traffic: faster on CPU.
+        params.flash_attn(true);
+        let ctx = WhisperContext::new_with_params(path, params)
             .context("could not load the speech model")?;
         let state = ctx
             .create_state()
