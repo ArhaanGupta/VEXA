@@ -6,9 +6,9 @@
 use anyhow::{Context, Result, anyhow};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{ErrorKind, Sample, SampleFormat};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 
@@ -55,10 +55,25 @@ pub struct Mic {
     pub rx: Receiver<Vec<f32>>,
 }
 
+/// What the UI shows about the microphone: its name and the last error, if any.
+#[derive(Default)]
+pub struct MicInfo {
+    pub name: Mutex<String>,
+    pub error: Mutex<Option<String>>,
+}
+
+impl MicInfo {
+    fn set_error(&self, e: Option<String>) {
+        if let Ok(mut g) = self.error.lock() {
+            *g = e;
+        }
+    }
+}
+
 /// Start capturing from the default input device. Capture keeps running (and reconnects after a
 /// device change) for the life of the process; while `paused` is set, audio is discarded in the
 /// callback.
-pub fn start(paused: Arc<AtomicBool>) -> Result<Mic> {
+pub fn start(paused: Arc<AtomicBool>, info: Arc<MicInfo>) -> Result<Mic> {
     let (tx, rx) = channel::<Vec<f32>>();
     let (ready_tx, ready_rx) = channel::<Result<()>>();
     thread::Builder::new()
@@ -67,8 +82,9 @@ pub fn start(paused: Arc<AtomicBool>) -> Result<Mic> {
             let mut first = Some(ready_tx);
             loop {
                 let (err_tx, err_rx) = channel::<()>();
-                match open_stream(tx.clone(), paused.clone(), err_tx) {
+                match open_stream(tx.clone(), paused.clone(), err_tx, info.clone()) {
                     Ok(stream) => {
+                        info.set_error(None);
                         if let Some(r) = first.take() {
                             let _ = r.send(Ok(()));
                         }
@@ -77,6 +93,7 @@ pub fn start(paused: Arc<AtomicBool>) -> Result<Mic> {
                         drop(stream);
                     }
                     Err(e) => {
+                        info.set_error(Some(format!("{e:#}")));
                         if let Some(r) = first.take() {
                             let _ = r.send(Err(e));
                             return;
@@ -94,11 +111,15 @@ fn open_stream(
     tx: Sender<Vec<f32>>,
     paused: Arc<AtomicBool>,
     err_tx: Sender<()>,
+    info: Arc<MicInfo>,
 ) -> Result<cpal::Stream> {
     let host = cpal::default_host();
     let device = host
         .default_input_device()
         .ok_or_else(|| anyhow!("no microphone found"))?;
+    if let (Ok(d), Ok(mut name)) = (device.description(), info.name.lock()) {
+        *name = d.name().to_string();
+    }
     let supported = device
         .default_input_config()
         .context("microphone has no usable format")?;
@@ -117,6 +138,7 @@ fn open_stream(
                 | ErrorKind::HostUnavailable
                 | ErrorKind::PermissionDenied
         ) {
+            info.set_error(Some(e.to_string()));
             let _ = err_tx.send(());
         }
     };

@@ -9,7 +9,7 @@ use crate::stt::Stt;
 use crate::wake::{self, Control, Wake};
 use anyhow::Result;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -45,6 +45,18 @@ pub struct Stats {
     pub in_speech: AtomicBool,
     pub transcribing: AtomicBool,
     pub ready: AtomicBool,
+    pub mic: Arc<crate::audio::MicInfo>,
+    /// When audio last arrived (ms since the Unix epoch).
+    last_audio_ms: AtomicU64,
+    /// The mic has delivered exact digital silence for a while (typically blocked by privacy settings).
+    silent: AtomicBool,
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 impl Stats {
@@ -56,6 +68,37 @@ impl Stats {
 
     fn set_level(&self, v: f32) {
         self.level.store(v.to_bits(), Ordering::Relaxed);
+    }
+
+    /// Name of the microphone in use.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn mic_name(&self) -> String {
+        self.mic.name.lock().map(|n| n.clone()).unwrap_or_default()
+    }
+
+    /// A plain-language description of a microphone problem, if there is one.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn mic_problem(&self) -> Option<String> {
+        if !self.ready.load(Ordering::Relaxed) {
+            return None;
+        }
+        if let Some(e) = self.mic.error.lock().ok().and_then(|e| e.clone()) {
+            return Some(format!(
+                "Microphone error: {e}. Check it is plugged in and enabled."
+            ));
+        }
+        if now_ms().saturating_sub(self.last_audio_ms.load(Ordering::Relaxed)) > 3_000 {
+            return Some("No audio is arriving from the microphone.".into());
+        }
+        if self.silent.load(Ordering::Relaxed) {
+            return Some(
+                "The microphone is sending pure silence. Windows may be blocking it: Settings > \
+                 Privacy & security > Microphone > turn on \"Let desktop apps access your microphone\". \
+                 Also check the mic isn't muted."
+                    .into(),
+            );
+        }
+        None
     }
 }
 
@@ -96,7 +139,8 @@ pub fn start(
     let stt = Stt::load(&model, cfg.stt_threads())?;
 
     let (utt_tx, utt_rx) = sync_channel::<Vec<f32>>(2);
-    let mic = crate::audio::start(paused.clone())?;
+    let mic = crate::audio::start(paused.clone(), stats.mic.clone())?;
+    stats.last_audio_ms.store(now_ms(), Ordering::Relaxed);
 
     let vad_cfg = SegmenterConfig {
         threshold: cfg.vad_threshold,
@@ -124,6 +168,7 @@ fn vad_loop(
     stats: Arc<Stats>,
 ) {
     let mut level = 0f32;
+    let mut silent_frames = 0usize;
     let mut detector = earshot::Detector::default();
     let mut seg = Segmenter::new(cfg);
     let mut pending: Vec<f32> = Vec::with_capacity(FRAME * 8);
@@ -137,6 +182,7 @@ fn vad_loop(
             stats.in_speech.store(false, Ordering::Relaxed);
             continue;
         }
+        stats.last_audio_ms.store(now_ms(), Ordering::Relaxed);
         pending.extend_from_slice(&chunk);
         let mut used = 0;
         while pending.len() - used >= FRAME {
@@ -146,6 +192,9 @@ fn vad_loop(
             used += FRAME;
             // Level meter: fast attack, slow release, perceptual (square-root) scale.
             let rms = (frame.iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt();
+            // A real mic always has some noise; exact zeros for 2 s means it is blocked or muted.
+            silent_frames = if rms < 1e-6 { silent_frames + 1 } else { 0 };
+            stats.silent.store(silent_frames > 125, Ordering::Relaxed);
             let target = (rms * 10.0).sqrt().min(1.0);
             level = if target > level {
                 target

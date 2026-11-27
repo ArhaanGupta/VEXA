@@ -177,33 +177,41 @@ impl Overlay {
         }
     }
 
-    fn panel_status(&self) -> String {
+    /// Status line, body text and tone for the status panel.
+    fn panel_texts(&self) -> (String, String, Tone) {
         let Some(p) = &self.panel else {
-            return String::new();
+            return (String::new(), String::new(), Tone::Normal);
         };
-        let state = if p.paused.load(Ordering::Relaxed) {
-            "Paused"
-        } else if !p.stats.ready.load(Ordering::Relaxed) {
-            "Starting…"
+        if p.paused.load(Ordering::Relaxed) {
+            return ("Vexa · Paused".into(), String::new(), Tone::Normal);
+        }
+        if let Some(problem) = p.stats.mic_problem() {
+            let line = format!("Vexa · Not hearing anything ({})", p.stats.mic_name());
+            return (line, problem, Tone::Error);
+        }
+        let state = if !p.stats.ready.load(Ordering::Relaxed) {
+            "Starting…".to_string()
         } else if p.stats.transcribing.load(Ordering::Relaxed) {
-            "Transcribing…"
+            "Transcribing…".to_string()
         } else if p.stats.in_speech.load(Ordering::Relaxed) {
-            "Hearing you…"
+            "Hearing you…".to_string()
         } else {
-            "Listening · say \"Vexa\" and a question"
+            format!("Listening on {}", p.stats.mic_name())
         };
-        format!("Vexa · {state}")
-    }
-
-    fn show_panel(&mut self) {
-        let Some(p) = &self.panel else { return };
         let body = match (p.heard.is_empty(), p.addressed) {
-            (true, _) => String::new(),
+            (true, _) => "Say \"Vexa\" and a question.".to_string(),
             (false, true) => format!("Heard (for Vexa): \u{201c}{}\u{201d}", p.heard),
             (false, false) => format!("Heard: \u{201c}{}\u{201d}", p.heard),
         };
-        let line = self.panel_status();
-        self.set(Mode::Idle, Tone::Normal, &line, &body, None, false);
+        (format!("Vexa · {state}"), body, Tone::Normal)
+    }
+
+    fn show_panel(&mut self) {
+        if self.panel.is_none() {
+            return;
+        }
+        let (line, body, tone) = self.panel_texts();
+        self.set(Mode::Idle, tone, &line, &body, None, false);
     }
 
     pub fn hide(&mut self) {
@@ -269,11 +277,13 @@ impl Overlay {
             return;
         }
         if self.mode == Mode::Idle {
-            let status = self.panel_status();
-            if status != self.line {
-                self.line = status;
+            let (line, body, tone) = self.panel_texts();
+            if line != self.line || body != self.body {
+                self.line = line;
+                self.body = body;
                 self.layout_text();
             }
+            self.tone = tone;
         }
         self.render();
     }
