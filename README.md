@@ -34,7 +34,7 @@ Mic ─▶ voice detection ─▶ local speech-to-text ─▶ wake word? ─▶ 
 | App | Native Rust, Win32 | No browser engine: about 1 MB of UI code, low RAM |
 | Voice detection | [Earshot](https://crates.io/crates/earshot) | Pure Rust, ~8 KB of state, faster than Silero |
 | Speech-to-text | [whisper.cpp](https://github.com/ggerganov/whisper.cpp) `base.en` (q5) | Accurate on CPU, runs only on speech |
-| Answers | Claude Opus 5.5 with web search | Current facts: prices, news, flights, weather |
+| Answers | Claude Sonnet 5.5 with web search | Current facts: prices, news, flights, weather |
 | Voice | Windows built-in speech (SAPI) | Local and free |
 
 ## Install (preview)

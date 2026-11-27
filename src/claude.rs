@@ -10,7 +10,7 @@ use std::time::Duration;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-pub const MODEL: &str = "claude-opus-5-5";
+pub const MODEL: &str = "claude-sonnet-5-5";
 /// Server-side tool loops can pause; resume at most this many times.
 const MAX_CONTINUATIONS: usize = 4;
 
