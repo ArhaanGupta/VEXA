@@ -199,40 +199,57 @@ Current local date and time: {} (UTC{}).",
 }
 
 impl Claude {
-    pub fn new(api_key: String) -> Self {
+    pub fn with_model(api_key: String, model: &str) -> Self {
         let agent = crate::http::agent(Duration::from_secs(120));
         Self {
             agent,
             api_key,
-            model: MODEL.to_string(),
+            model: model.to_string(),
             effort: "low".to_string(),
         }
     }
 
+    /// Haiku has no server-side refusal fallback and only the basic web search tool.
+    fn is_haiku(&self) -> bool {
+        self.model.starts_with("claude-haiku")
+    }
+
     pub fn build_request(&self, messages: &[Value], system: &str) -> Value {
-        json!({
+        let search_tool = if self.is_haiku() {
+            "web_search_20250305"
+        } else {
+            // Filters search results with code before they enter the context: fewer tokens.
+            "web_search_20260209"
+        };
+        let mut body = json!({
             "model": self.model,
             "max_tokens": 16000,
             "system": system,
             // Low effort keeps voice answers fast; web search still runs when needed.
             "output_config": { "effort": self.effort },
-            // Route around a safety-classifier false positive instead of failing the request.
-            "fallbacks": "default",
             "tools": [
-                { "type": "web_search_20260209", "name": "web_search", "max_uses": 3 }
+                { "type": search_tool, "name": "web_search", "max_uses": 3 }
             ],
             "messages": messages,
-        })
+        });
+        if !self.is_haiku() {
+            // Route around a safety-classifier false positive instead of failing the request.
+            body["fallbacks"] = json!("default");
+        }
+        body
     }
 
     fn post(&self, body: &Value) -> Result<Value, ClaudeError> {
-        let mut resp = self
+        let mut req = self
             .agent
             .post(API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", API_VERSION)
-            .header("anthropic-beta", FALLBACK_BETA)
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if body.get("fallbacks").is_some() {
+            req = req.header("anthropic-beta", FALLBACK_BETA);
+        }
+        let mut resp = req
             .send_json(body)
             .map_err(|e| ClaudeError::Other(anyhow!("network error: {e}")))?;
         let status = resp.status().as_u16();
@@ -415,6 +432,14 @@ mod tests {
     }
 
     #[test]
+    fn haiku_request_uses_basic_search_and_no_fallbacks() {
+        let c = Claude::with_model("k".into(), "claude-haiku-5-5");
+        let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
+        assert_eq!(body["tools"][0]["type"], "web_search_20250305");
+        assert!(body.get("fallbacks").is_none());
+    }
+
+    #[test]
     fn empty_answer_is_an_error() {
         assert!(extract_text(&json!({ "content": [] })).is_err());
     }
@@ -429,11 +454,12 @@ mod tests {
 
     #[test]
     fn request_shape() {
-        let c = Claude::new("k".into());
+        let c = Claude::with_model("k".into(), MODEL);
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
         assert_eq!(body["model"], MODEL);
         assert_eq!(body["tools"][0]["type"], "web_search_20260209");
         assert_eq!(body["output_config"]["effort"], "low");
+        assert_eq!(body["fallbacks"], "default");
         assert!(body.get("thinking").is_none());
         assert!(body.get("temperature").is_none());
     }

@@ -15,6 +15,9 @@ pub struct Config {
     pub stt_threads: usize,
     /// Voice-activity threshold (0-1). Raise it in noisy rooms.
     pub vad_threshold: f32,
+    /// Claude model that answers requests, e.g. "claude-opus-5-5", "claude-sonnet-5-5" or
+    /// "claude-haiku-5-5".
+    pub model: String,
     /// Keep a live status panel on screen (mic level, what was heard) instead of only showing
     /// up for requests. On while Vexa is being set up and tested.
     pub always_show: bool,
@@ -28,6 +31,7 @@ impl Default for Config {
             stt_threads: 0,
             vad_threshold: 0.5,
             always_show: true,
+            model: crate::claude::MODEL.into(),
         }
     }
 }

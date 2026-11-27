@@ -329,7 +329,9 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>) {
                 .lock()
                 .map(|mut c| c.history(started))
                 .unwrap_or_default();
-            match Claude::new(key).ask(&request, &history) {
+            // Read settings per request so a model change applies without restarting.
+            let model = Config::load().model;
+            match Claude::with_model(key, &model).ask(&request, &history) {
                 Ok(a) => {
                     debug!(
                         "answered in {} ms ({})",
