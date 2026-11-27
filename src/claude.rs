@@ -35,6 +35,8 @@ pub struct Usage {
     pub output_tokens: u64,
     pub searches: u64,
     pub cost_usd: f64,
+    /// Tools used, in order, without repeats (e.g. "stock_prices", "web_search").
+    pub sources: Vec<String>,
 }
 
 /// List prices in USD per million tokens (input, output) for standard requests.
@@ -69,6 +71,19 @@ impl Usage {
             + searches as f64 * SEARCH_PRICE_USD;
     }
 
+    /// Record which tools a response used.
+    pub fn note_sources(&mut self, content: &Value) {
+        for b in content.as_array().into_iter().flatten() {
+            let kind = b["type"].as_str().unwrap_or("");
+            if (kind == "tool_use" || kind == "server_tool_use")
+                && let Some(name) = b["name"].as_str()
+                && !self.sources.iter().any(|s| s == name)
+            {
+                self.sources.push(name.to_string());
+            }
+        }
+    }
+
     /// Short summary, e.g. "12.3k in · 85 out · 2 searches · ≈$0.07".
     pub fn summary(&self) -> String {
         let k = |t: u64| {
@@ -78,8 +93,13 @@ impl Usage {
                 t.to_string()
             }
         };
+        let via = if self.sources.is_empty() {
+            "no tools".to_string()
+        } else {
+            format!("via {}", self.sources.join(", "))
+        };
         format!(
-            "{} in · {} out · {} search{} · \u{2248}${:.3}",
+            "{via} · {} in · {} out · {} search{} · \u{2248}${:.3}",
             k(self.input_tokens),
             k(self.output_tokens),
             self.searches,
@@ -307,6 +327,7 @@ impl Claude {
                 resp["model"].as_str().unwrap_or(&self.model),
                 &resp["usage"],
             );
+            usage.note_sources(&resp["content"]);
             match resp["stop_reason"].as_str() {
                 Some("pause_turn") => {
                     // Resume the server-side tool loop: resend with the partial assistant turn.
@@ -492,7 +513,17 @@ mod tests {
         );
         assert_eq!(
             u.summary(),
-            "1000.0k in · 1.0k out · 2 searches · \u{2248}$4.040"
+            "no tools · 1000.0k in · 1.0k out · 2 searches · \u{2248}$4.040"
+        );
+        u.note_sources(&json!([
+            { "type": "tool_use", "name": "stock_prices" },
+            { "type": "server_tool_use", "name": "web_search" },
+            { "type": "tool_use", "name": "stock_prices" }
+        ]));
+        assert!(
+            u.summary().starts_with("via stock_prices, web_search · "),
+            "{}",
+            u.summary()
         );
     }
 
