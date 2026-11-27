@@ -34,7 +34,7 @@ impl Default for SegmenterConfig {
         Self {
             threshold: 0.5,
             start_frames: frames_for_ms(96),
-            end_frames: frames_for_ms(720),
+            end_frames: frames_for_ms(560),
             preroll_frames: frames_for_ms(320),
             max_frames: frames_for_ms(15_000),
             min_speech_frames: frames_for_ms(240),
