@@ -51,11 +51,20 @@ macro_rules! debug {
 /// Start the pipeline on background threads. Returns once the microphone is open.
 pub fn start(cfg: Config, ui: Arc<dyn Ui>, paused: Arc<AtomicBool>) -> Result<()> {
     let ui2 = ui.clone();
-    let model = crate::stt::ensure_model(&cfg.stt_model, |pct| {
-        if pct % 5 == 0 {
-            ui2.send(UiEvent::Status(format!("Downloading speech model… {pct}%")));
-        }
+    let model = crate::stt::ensure_model(&cfg.stt_model, |done, total| {
+        let mb = |b: u64| b / (1024 * 1024);
+        let msg = if total > 0 {
+            format!(
+                "Downloading speech model (one time only): {} of {} MB",
+                mb(done),
+                mb(total)
+            )
+        } else {
+            format!("Downloading speech model (one time only): {} MB", mb(done))
+        };
+        ui2.send(UiEvent::Status(msg));
     })?;
+    ui.send(UiEvent::Status("Loading speech model…".into()));
     let stt = Stt::load(&model, cfg.stt_threads())?;
 
     let (utt_tx, utt_rx) = sync_channel::<Vec<f32>>(2);

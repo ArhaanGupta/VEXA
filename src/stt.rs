@@ -15,8 +15,8 @@ fn model_url(name: &str) -> String {
     format!("https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{name}.bin")
 }
 
-/// Download the model if it is not present yet. `progress` receives 0-100.
-pub fn ensure_model(name: &str, mut progress: impl FnMut(u8)) -> Result<PathBuf> {
+/// Download the model if it is not present yet. `progress` receives (bytes done, total bytes or 0).
+pub fn ensure_model(name: &str, mut progress: impl FnMut(u64, u64)) -> Result<PathBuf> {
     let path = model_path(name);
     if path.exists() {
         return Ok(path);
@@ -43,7 +43,8 @@ pub fn ensure_model(name: &str, mut progress: impl FnMut(u8)) -> Result<PathBuf>
     let mut file = std::fs::File::create(&tmp)?;
     let mut buf = vec![0u8; 1 << 16];
     let mut done: u64 = 0;
-    let mut last = 255u8;
+    let mut last_report: u64 = 0;
+    progress(0, total);
     loop {
         let n = reader.read(&mut buf)?;
         if n == 0 {
@@ -51,12 +52,9 @@ pub fn ensure_model(name: &str, mut progress: impl FnMut(u8)) -> Result<PathBuf>
         }
         file.write_all(&buf[..n])?;
         done += n as u64;
-        if let Some(pct) = (done * 100).checked_div(total) {
-            let pct = pct.min(100) as u8;
-            if pct != last {
-                last = pct;
-                progress(pct);
-            }
+        if done - last_report >= 2 * 1024 * 1024 {
+            last_report = done;
+            progress(done, total);
         }
     }
     file.flush()?;

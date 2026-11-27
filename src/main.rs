@@ -108,7 +108,9 @@ fn cli_wav(path: &str) -> Result<()> {
     }
     println!("{} utterance(s)", utterances.len());
 
-    let model = stt::ensure_model(&cfg.stt_model, |p| eprint!("\rdownloading model {p}%"))?;
+    let model = stt::ensure_model(&cfg.stt_model, |done, _| {
+        eprint!("\rdownloading model {} MB", done / (1024 * 1024))
+    })?;
     let mut stt = stt::Stt::load(&model, cfg.stt_threads())?;
     for (i, u) in utterances.iter().enumerate() {
         let t = std::time::Instant::now();
