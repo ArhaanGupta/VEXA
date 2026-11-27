@@ -63,6 +63,10 @@ pub fn run(name: &str, input: &Value) -> (String, bool) {
             .as_str()
             .ok_or_else(|| anyhow!("missing place"))
             .and_then(|p| weather(p, input["days"].as_u64().unwrap_or(1))),
+        "fetch_page" => input["url"]
+            .as_str()
+            .ok_or_else(|| anyhow!("missing url"))
+            .and_then(fetch_page),
         other => Err(anyhow!("unknown tool {other}")),
     };
     match result {
@@ -285,6 +289,216 @@ pub fn format_weather(label: &str, f: &Value) -> Result<String> {
     Ok(lines.join("\n"))
 }
 
+const PAGE_LIMIT_CHARS: usize = 12_000;
+
+/// Split "https://host:port/path" into (scheme, host, port, rest).
+fn split_url(url: &str) -> Result<(&str, String, u16, &str)> {
+    let (scheme, rest) = url
+        .split_once("://")
+        .ok_or_else(|| anyhow!("not a full URL"))?;
+    let scheme_lc = scheme.to_ascii_lowercase();
+    let default_port = match scheme_lc.as_str() {
+        "https" => 443,
+        "http" => 80,
+        _ => return Err(anyhow!("only http and https addresses are allowed")),
+    };
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    if authority.contains('@') {
+        return Err(anyhow!("addresses with user names are not allowed"));
+    }
+    let (host, port) = match authority.rsplit_once(':') {
+        Some((h, p)) if !h.ends_with(']') || authority.starts_with('[') && h.ends_with(']') => {
+            match p.parse::<u16>() {
+                Ok(port) => (h, port),
+                Err(_) => (authority, default_port),
+            }
+        }
+        _ => (authority, default_port),
+    };
+    let host = host
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return Err(anyhow!("address has no host"));
+    }
+    Ok((scheme, host, port, &rest[end..]))
+}
+
+/// True for addresses on the public internet (not this PC, the local network or reserved ranges).
+fn is_public(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_documentation()
+                || o[0] == 0
+                || (o[0] == 100 && (64..128).contains(&o[1]))
+                || (o[0] == 198 && (18..20).contains(&o[1]))
+                || o[0] >= 240)
+        }
+        IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return is_public(IpAddr::V4(v4));
+            }
+            let seg = v6.segments();
+            !(v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (seg[0] & 0xfe00) == 0xfc00
+                || (seg[0] & 0xffc0) == 0xfe80)
+        }
+    }
+}
+
+/// Refuse addresses that resolve to anything other than the public internet.
+fn check_public(url: &str) -> Result<()> {
+    use std::net::ToSocketAddrs;
+    let (_, host, port, _) = split_url(url)?;
+    if host == "localhost" || host.ends_with(".local") || host.ends_with(".localhost") {
+        return Err(anyhow!("local addresses are not allowed"));
+    }
+    let addrs: Vec<_> = (host.as_str(), port)
+        .to_socket_addrs()
+        .context("could not resolve the address")?
+        .collect();
+    if addrs.is_empty() || addrs.iter().any(|a| !is_public(a.ip())) {
+        return Err(anyhow!("only public internet addresses are allowed"));
+    }
+    Ok(())
+}
+
+fn fetch_page(url: &str) -> Result<String> {
+    let agent = crate::http::agent_with(Duration::from_secs(10), 0);
+    let mut current = url.trim().to_string();
+    // Follow up to three redirects, checking each target is public too.
+    for _ in 0..4 {
+        check_public(&current)?;
+        let mut resp = agent
+            .get(&current)
+            .header("user-agent", "Mozilla/5.0 (compatible; Vexa assistant)")
+            .header(
+                "accept",
+                "text/html,application/json,text/plain;q=0.9,*/*;q=0.5",
+            )
+            .call()
+            .context("page request failed")?;
+        let status = resp.status().as_u16();
+        if (300..400).contains(&status) {
+            let location = resp
+                .headers()
+                .get("location")
+                .and_then(|v| v.to_str().ok())
+                .ok_or_else(|| anyhow!("redirect without a location"))?;
+            current = if location.contains("://") {
+                location.to_string()
+            } else {
+                let (scheme, host, port, _) = split_url(&current)?;
+                let path = if location.starts_with('/') {
+                    location.to_string()
+                } else {
+                    format!("/{location}")
+                };
+                format!("{scheme}://{host}:{port}{path}")
+            };
+            continue;
+        }
+        if status != 200 {
+            return Err(anyhow!("the page returned HTTP {status}"));
+        }
+        let is_html = resp
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|t| t.contains("html"));
+        let raw = resp
+            .body_mut()
+            .with_config()
+            .limit(3 * 1024 * 1024)
+            .read_to_string()
+            .context("could not read the page")?;
+        let text = if is_html { html_to_text(&raw) } else { raw };
+        return Ok(format!(
+            "Content of {current}:\n{}",
+            truncate_chars(&text, PAGE_LIMIT_CHARS)
+        ));
+    }
+    Err(anyhow!("too many redirects"))
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}\n[truncated]", &s[..i]),
+        None => s.to_string(),
+    }
+}
+
+/// Rough HTML-to-text: drops scripts, styles and tags, decodes common entities, keeps line breaks
+/// at block elements. Good enough to hand Claude the readable part of a page.
+pub fn html_to_text(html: &str) -> String {
+    let lower = html.to_ascii_lowercase();
+    let mut out = String::with_capacity(html.len() / 3);
+    let mut i = 0;
+    let bytes = html.as_bytes();
+    while i < bytes.len() {
+        if bytes[i] == b'<' {
+            // Skip whole elements whose content is never readable text.
+            let mut skipped = false;
+            for tag in ["script", "style", "noscript", "svg", "template", "head"] {
+                if lower[i + 1..].starts_with(tag) {
+                    let close = format!("</{tag}");
+                    i = lower[i..].find(&close).map_or(bytes.len(), |p| i + p);
+                    i = lower[i..].find('>').map_or(bytes.len(), |p| i + p + 1);
+                    skipped = true;
+                    break;
+                }
+            }
+            if skipped {
+                continue;
+            }
+            let end = lower[i..].find('>').map_or(bytes.len(), |p| i + p + 1);
+            let tag = &lower[i..end];
+            if [
+                "<p", "<br", "<div", "<li", "<tr", "<h1", "<h2", "<h3", "<h4", "</p", "</div",
+                "</li", "</tr", "</h",
+            ]
+            .iter()
+            .any(|t| tag.starts_with(t))
+            {
+                out.push('\n');
+            } else {
+                out.push(' ');
+            }
+            i = end;
+        } else {
+            let next = lower[i..].find('<').map_or(bytes.len(), |p| i + p);
+            out.push_str(&html[i..next]);
+            i = next;
+        }
+    }
+    let decoded = out
+        .replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&#x27;", "'");
+    decoded
+        .lines()
+        .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,6 +554,57 @@ mod tests {
     #[test]
     fn encodes_place_names() {
         assert_eq!(url_encode("São Paulo"), "S%C3%A3o%20Paulo");
+    }
+
+    #[test]
+    fn html_becomes_readable_text() {
+        let html = "<html><head><title>x</title><style>p{color:red}</style></head><body>\
+<script>var a = '<p>';</script><h1>Nvidia</h1><p>Closed at &amp; up&nbsp;5%</p><div>Next</div></body></html>";
+        assert_eq!(html_to_text(html), "Nvidia\nClosed at & up 5%\nNext");
+    }
+
+    #[test]
+    fn only_public_addresses() {
+        use std::net::IpAddr;
+        for bad in [
+            "127.0.0.1",
+            "10.0.0.5",
+            "192.168.1.1",
+            "172.16.0.1",
+            "169.254.169.254",
+            "100.64.0.1",
+            "::1",
+            "fe80::1",
+            "fd00::1",
+            "::ffff:127.0.0.1",
+            "0.0.0.0",
+        ] {
+            assert!(!is_public(bad.parse::<IpAddr>().unwrap()), "{bad}");
+        }
+        for good in ["8.8.8.8", "151.101.1.69", "2606:4700::1111"] {
+            assert!(is_public(good.parse::<IpAddr>().unwrap()), "{good}");
+        }
+        assert!(check_public("http://localhost:8080/").is_err());
+        assert!(check_public("https://127.0.0.1/").is_err());
+        assert!(check_public("https://user@example.com/").is_err());
+        assert!(check_public("file:///C:/Windows/win.ini").is_err());
+    }
+
+    #[test]
+    fn splits_urls() {
+        let (scheme, host, port, rest) = split_url("https://En.Wikipedia.org/api?x=1").unwrap();
+        assert_eq!(
+            (scheme, host.as_str(), port, rest),
+            ("https", "en.wikipedia.org", 443, "/api?x=1")
+        );
+        assert_eq!(split_url("http://example.com:8080").unwrap().2, 8080);
+        assert_eq!(split_url("http://[::1]:81/").unwrap().1, "::1");
+    }
+
+    #[test]
+    fn truncates_on_char_boundary() {
+        assert_eq!(truncate_chars("héllo", 2), "hé\n[truncated]");
+        assert_eq!(truncate_chars("hi", 5), "hi");
     }
 
     #[test]
