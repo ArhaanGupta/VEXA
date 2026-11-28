@@ -1,12 +1,20 @@
 //! Tools Claude can call that run on this PC. Direct data is faster, cheaper and more exact than
 //! a web search for questions like stock prices.
 
+use crate::edition::Edition;
 use anyhow::{Context, Result, anyhow};
 use serde_json::{Value, json};
 use std::time::Duration;
 
-/// Tool definitions sent with every request.
-pub fn definitions() -> Vec<Value> {
+/// Definitions of the named tools, sent with every request.
+pub fn definitions(names: &[&str]) -> Vec<Value> {
+    all_definitions()
+        .into_iter()
+        .filter(|d| d["name"].as_str().is_some_and(|n| names.contains(&n)))
+        .collect()
+}
+
+fn all_definitions() -> Vec<Value> {
     vec![
         json!({
             "name": "stock_prices",
@@ -53,7 +61,10 @@ pub fn definitions() -> Vec<Value> {
 }
 
 /// Run a tool. Returns the result text and whether it is an error.
-pub fn run(name: &str, input: &Value) -> (String, bool) {
+pub fn run(name: &str, input: &Value, edition: Edition) -> (String, bool) {
+    if !edition.tools().contains(&name) {
+        return (format!("tool {name} is not available"), true);
+    }
     let result = match name {
         "stock_prices" => input["symbol"]
             .as_str()
@@ -66,7 +77,7 @@ pub fn run(name: &str, input: &Value) -> (String, bool) {
         "fetch_page" => input["url"]
             .as_str()
             .ok_or_else(|| anyhow!("missing url"))
-            .and_then(fetch_page),
+            .and_then(|u| fetch_page(u, edition.trusted_domains())),
         other => Err(anyhow!("unknown tool {other}")),
     };
     match result {
@@ -375,12 +386,27 @@ fn check_public(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn fetch_page(url: &str) -> Result<String> {
+/// Whether `host` is one of `domains` or a subdomain of one.
+fn host_allowed(host: &str, domains: &[&str]) -> bool {
+    domains
+        .iter()
+        .any(|d| host == *d || host.ends_with(&format!(".{d}")))
+}
+
+fn fetch_page(url: &str, trusted: Option<&[&str]>) -> Result<String> {
     let agent = crate::http::agent_with(Duration::from_secs(10), 0);
     let mut current = url.trim().to_string();
     // Follow up to three redirects, checking each target is public too.
     for _ in 0..4 {
         check_public(&current)?;
+        if let Some(domains) = trusted {
+            let (_, host, _, _) = split_url(&current)?;
+            if !host_allowed(&host, domains) {
+                return Err(anyhow!(
+                    "{host} is not one of this edition's trusted sources"
+                ));
+            }
+        }
         let mut resp = agent
             .get(&current)
             .header("user-agent", "Mozilla/5.0 (compatible; Vexa assistant)")
@@ -527,7 +553,11 @@ mod tests {
 
     #[test]
     fn rejects_odd_symbols() {
-        let (msg, is_error) = run("stock_prices", &json!({ "symbol": "NVDA/../x" }));
+        let (msg, is_error) = run(
+            "stock_prices",
+            &json!({ "symbol": "NVDA/../x" }),
+            Edition::General,
+        );
         assert!(is_error, "{msg}");
     }
 
@@ -608,7 +638,16 @@ mod tests {
     }
 
     #[test]
+    fn trusted_hosts_include_subdomains_only() {
+        let d = ["legislation.gov.au"];
+        assert!(host_allowed("legislation.gov.au", &d));
+        assert!(host_allowed("www.legislation.gov.au", &d));
+        assert!(!host_allowed("evil-legislation.gov.au", &d));
+        assert!(!host_allowed("legislation.gov.au.example.com", &d));
+    }
+
+    #[test]
     fn unknown_tool_is_an_error() {
-        assert!(run("nope", &json!({})).1);
+        assert!(run("nope", &json!({}), Edition::General).1);
     }
 }

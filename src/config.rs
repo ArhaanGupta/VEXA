@@ -19,6 +19,8 @@ pub struct Config {
     /// unless set, so the built-in default can improve with updates.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Which edition of Vexa to run (general, legal_au, ...).
+    pub edition: crate::edition::Edition,
     /// Keep a live status panel on screen (mic level, what was heard) instead of only showing
     /// up for requests. On while Vexa is being set up and tested.
     pub always_show: bool,
@@ -33,6 +35,7 @@ impl Default for Config {
             vad_threshold: 0.5,
             always_show: true,
             model: None,
+            edition: Default::default(),
         }
     }
 }
@@ -72,12 +75,12 @@ impl Config {
         Ok(())
     }
 
-    /// The Claude model to use: the override if set, otherwise the built-in default.
+    /// The Claude model to use: the override if set, otherwise the edition's default.
     pub fn model(&self) -> String {
         self.model
             .clone()
             .filter(|m| !m.trim().is_empty())
-            .unwrap_or_else(|| crate::claude::MODEL.to_string())
+            .unwrap_or_else(|| self.edition.default_model().to_string())
     }
 
     pub fn stt_threads(&self) -> usize {

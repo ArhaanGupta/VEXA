@@ -3,6 +3,7 @@
 //! One request per voice command. Nothing is cached or logged; the request and answer exist only
 //! in memory for the duration of the call.
 
+use crate::edition::Edition;
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 use std::time::Duration;
@@ -10,7 +11,6 @@ use std::time::Duration;
 const API_URL: &str = "https://api.anthropic.com/v1/messages";
 const API_VERSION: &str = "2026-10-21";
 const FALLBACK_BETA: &str = "server-side-fallback-2026-07-01";
-pub const MODEL: &str = "claude-sonnet-5-5";
 /// Server-side tool loops can pause; resume at most this many times.
 const MAX_CONTINUATIONS: usize = 4;
 
@@ -18,7 +18,7 @@ pub struct Claude {
     agent: ureq::Agent,
     api_key: String,
     model: String,
-    effort: String,
+    edition: Edition,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,55 +201,14 @@ pub fn build_messages(
     messages
 }
 
-pub fn system_prompt() -> String {
-    String::from(
-        "You are a voice assistant running in the background on the user's computer. \
-The user asked out loud while doing something else. Your reply is read aloud, so it must be short.\n\
-\n\
-How to answer:\n\
-- Answer in ONE short sentence with just the fact asked for, e.g. \"Nvidia closed at 165 dollars \
-and 5 cents on Monday.\" Two sentences only if one cannot answer it.\n\
-- No background, reasons, sources, caveats or offers of more help unless the user asks. They can \
-ask a follow-up (\"why was that?\"), and then you explain.\n\
-- If the question has a false premise, answer the closest useful thing in the same sentence, e.g. \
-markets are closed at weekends: \"Markets were closed on Sunday; Nvidia closed at ... on Friday.\"\n\
-- Plain text only: no markdown, lists, URLs or emoji. Say numbers the way a person would.\n\
-- The request comes from speech recognition and may contain mis-heard words; interpret it charitably.\n\
-- Never say your own name.\n\
-\n\
-Choosing where the answer comes from. Use the cheapest source that is reliable, in this order:\n\
-1. Your own knowledge, for things that do not change: definitions, history, science, geography, \
-maths, unit conversions, how-to. No tools.\n\
-2. The current date and time (given after the question), for time zones, dates and countdowns. No tools.\n\
-3. A direct data tool: stock_prices for stocks, indices, ETFs, crypto and currency exchange rates; \
-weather for weather. These are exact, fast and nearly free.\n\
-4. fetch_page, when you can name a specific authoritative page or public API that holds the \
-answer (a Wikipedia summary, an official site, a government or company page).\n\
-5. web_search, only for news, recent events, the reasons behind a move, or when you do not know \
-where the answer lives. It costs the most, so use it last.\n\
-\n\
-Accuracy:\n\
-- Trust only reputable sources: official and primary sources (exchanges, company filings and \
-investor relations, government agencies), established news organisations (Reuters, AP, Bloomberg, \
-Financial Times, Wall Street Journal, CNBC, BBC, New York Times) and established data providers \
-(Nasdaq, NYSE, Yahoo Finance, Google Finance, MarketWatch). Ignore content farms, \
-aggregators, blogs, forums and trading-app marketing sites.\n\
-- For numbers, prefer a source that states the figure directly. If reputable sources disagree or \
-you could only find a weak source, say so in a few words instead of guessing.\n\
-- Be quick: one tool call is usually enough. Do not write anything before or between tool calls.\n\
-\n\
-The current local date and time are given in a system message after the user's question.",
-    )
-}
-
 impl Claude {
-    pub fn with_model(api_key: String, model: &str) -> Self {
+    pub fn new(api_key: String, edition: Edition, model: &str) -> Self {
         let agent = crate::http::agent(Duration::from_secs(120));
         Self {
             agent,
             api_key,
             model: model.to_string(),
-            effort: "low".to_string(),
+            edition,
         }
     }
 
@@ -265,15 +224,18 @@ impl Claude {
             // Filters search results with code before they enter the context: fewer tokens.
             "web_search_20260209"
         };
-        let mut tools = crate::tools::definitions();
-        tools.push(json!({ "type": search_tool, "name": "web_search", "max_uses": 3 }));
+        let mut tools = crate::tools::definitions(self.edition.tools());
+        let mut search = json!({ "type": search_tool, "name": "web_search", "max_uses": 3 });
+        if let Some(domains) = self.edition.trusted_domains() {
+            search["allowed_domains"] = json!(domains);
+        }
+        tools.push(search);
         let mut body = json!({
             "model": self.model,
             "max_tokens": 16000,
             // Cache the tools and system prompt: they are identical on every request.
             "system": [{ "type": "text", "text": system, "cache_control": { "type": "ephemeral" } }],
-            // Low effort keeps voice answers fast; web search still runs when needed.
-            "output_config": { "effort": self.effort },
+            "output_config": { "effort": self.edition.effort() },
             "tools": tools,
             "messages": messages,
         });
@@ -318,11 +280,11 @@ impl Claude {
     /// Ask one question and return a speakable answer.
     /// Ask a question, with earlier turns of the conversation as context.
     pub fn ask(&self, request: &str, history: &[(String, String)]) -> Result<Answer, ClaudeError> {
-        let system = system_prompt();
+        let system = self.edition.system_prompt();
         let mut messages = build_messages(history, request, chrono::Local::now());
         let mut usage = Usage::default();
         for _ in 0..=MAX_CONTINUATIONS {
-            let resp = self.post(&self.build_request(&messages, &system))?;
+            let resp = self.post(&self.build_request(&messages, system))?;
             usage.add(
                 resp["model"].as_str().unwrap_or(&self.model),
                 &resp["usage"],
@@ -343,8 +305,11 @@ impl Claude {
                         .flatten()
                         .filter(|b| b["type"] == "tool_use")
                         .map(|b| {
-                            let (text, is_error) =
-                                crate::tools::run(b["name"].as_str().unwrap_or(""), &b["input"]);
+                            let (text, is_error) = crate::tools::run(
+                                b["name"].as_str().unwrap_or(""),
+                                &b["input"],
+                                self.edition,
+                            );
                             json!({
                                 "type": "tool_result",
                                 "tool_use_id": b["id"],
@@ -529,7 +494,7 @@ mod tests {
 
     #[test]
     fn haiku_request_uses_basic_search_and_no_fallbacks() {
-        let c = Claude::with_model("k".into(), "claude-haiku-5-5");
+        let c = Claude::new("k".into(), Edition::General, "claude-haiku-5-5");
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.last().unwrap()["type"], "web_search_20250305");
@@ -570,16 +535,15 @@ mod tests {
 
     #[test]
     fn request_shape() {
-        let c = Claude::with_model("k".into(), MODEL);
+        let c = Claude::new("k".into(), Edition::General, "claude-sonnet-5-5");
         let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
-        assert_eq!(body["model"], MODEL);
+        assert_eq!(body["model"], "claude-sonnet-5-5");
         assert_eq!(body["tools"][0]["name"], "stock_prices");
         let tools = body["tools"].as_array().unwrap();
         assert_eq!(tools.last().unwrap()["type"], "web_search_20260209");
         assert_eq!(body["output_config"]["effort"], "low");
         assert_eq!(body["fallbacks"], "default");
         assert_eq!(body["system"][0]["cache_control"]["type"], "ephemeral");
-        assert_eq!(system_prompt(), system_prompt());
         assert!(body.get("thinking").is_none());
         assert!(body.get("temperature").is_none());
     }

@@ -253,7 +253,9 @@ fn stt_loop(mut stt: Stt, rx: Receiver<Vec<f32>>, ui: Arc<dyn Ui>, stats: Arc<St
     while let Ok(audio) = rx.recv() {
         let started = Instant::now();
         stats.transcribing.store(true, Ordering::Relaxed);
-        let result = stt.transcribe(&audio);
+        // Read per utterance so switching edition in the tray applies straight away.
+        let edition = Config::load().edition;
+        let result = stt.transcribe(&audio, edition.stt_prompt());
         stats.transcribing.store(false, Ordering::Relaxed);
         let text = match result {
             Ok(t) => t,
@@ -332,8 +334,8 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>, stt_time: Option<Duration>) {
                 .map(|mut c| c.history(started))
                 .unwrap_or_default();
             // Read settings per request so a model change applies without restarting.
-            let model = Config::load().model();
-            match Claude::with_model(key, &model).ask(&request, &history) {
+            let cfg = Config::load();
+            match Claude::new(key, cfg.edition, &cfg.model()).ask(&request, &history) {
                 Ok(a) => {
                     debug!(
                         "answered in {} ms ({})",

@@ -4,6 +4,7 @@
 mod audio;
 mod claude;
 mod config;
+mod edition;
 mod engine;
 mod http;
 mod secrets;
@@ -100,7 +101,8 @@ fn run_app() -> Result<()> {
 fn cli_ask(question: &str) -> Result<()> {
     let key = secrets::load_api_key().ok_or_else(|| anyhow::anyhow!("no API key configured"))?;
     let started = std::time::Instant::now();
-    match claude::Claude::with_model(key, &config::Config::load().model()).ask(question, &[]) {
+    let cfg = config::Config::load();
+    match claude::Claude::new(key, cfg.edition, &cfg.model()).ask(question, &[]) {
         Ok(a) => println!(
             "{}\n({:.1}s, {})",
             a.text,
@@ -148,7 +150,7 @@ fn cli_wav(path: &str) -> Result<()> {
     let mut stt = stt::Stt::load(&model, cfg.stt_threads())?;
     for (i, u) in utterances.iter().enumerate() {
         let t = std::time::Instant::now();
-        let text = stt.transcribe(u)?;
+        let text = stt.transcribe(u, cfg.edition.stt_prompt())?;
         println!(
             "#{i} {:.1}s audio, {} ms: {text:?} -> {:?}",
             u.len() as f32 / 16_000.0,
