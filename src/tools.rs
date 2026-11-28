@@ -57,6 +57,27 @@ fn all_definitions() -> Vec<Value> {
             },
             "strict": true
         }),
+        json!({
+            "name": "fetch_page",
+            "description": "Read one specific public web page or JSON API whose address you already \
+        know, as plain text. Much cheaper than web search: use it when you can name an authoritative source, \
+        e.g. https://en.wikipedia.org/api/rest_v1/page/summary/<Title> for a Wikipedia summary, an official \
+        register, court, government or company page, or a public data API. Long pages are cut to about \
+        12,000 characters; pass `find` to get the passages around a word or phrase instead (for example a \
+        section number or heading), which is how to read one provision of a long Act.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "url": { "type": "string", "description": "Full https:// address." },
+                    "find": {
+                        "type": "string",
+                        "description": "Optional word or phrase to jump to, e.g. \"394\" or \"Limitation period\". Leave out for the start of the page."
+                    }
+                },
+                "required": ["url"],
+                "additionalProperties": false
+            }
+        }),
     ]
 }
 
@@ -77,7 +98,10 @@ pub fn run(name: &str, input: &Value, edition: Edition) -> (String, bool) {
         "fetch_page" => input["url"]
             .as_str()
             .ok_or_else(|| anyhow!("missing url"))
-            .and_then(|u| fetch_page(u, edition.trusted_domains())),
+            .and_then(|u| {
+                let find = input["find"].as_str().filter(|f| !f.trim().is_empty());
+                fetch_page(u, find, edition.trusted_domains())
+            }),
         other => Err(anyhow!("unknown tool {other}")),
     };
     match result {
@@ -393,7 +417,7 @@ fn host_allowed(host: &str, domains: &[&str]) -> bool {
         .any(|d| host == *d || host.ends_with(&format!(".{d}")))
 }
 
-fn fetch_page(url: &str, trusted: Option<&[&str]>) -> Result<String> {
+fn fetch_page(url: &str, find: Option<&str>, trusted: Option<&[&str]>) -> Result<String> {
     let agent = crate::http::agent_with(Duration::from_secs(10), 0);
     let mut current = url.trim().to_string();
     // Follow up to three redirects, checking each target is public too.
@@ -447,16 +471,67 @@ fn fetch_page(url: &str, trusted: Option<&[&str]>) -> Result<String> {
         let raw = resp
             .body_mut()
             .with_config()
-            .limit(3 * 1024 * 1024)
+            .limit(16 * 1024 * 1024)
             .read_to_string()
             .context("could not read the page")?;
         let text = if is_html { html_to_text(&raw) } else { raw };
-        return Ok(format!(
-            "Content of {current}:\n{}",
-            truncate_chars(&text, PAGE_LIMIT_CHARS)
-        ));
+        if text.chars().count() < 300 {
+            return Err(anyhow!(
+                "{current} has almost no readable text (it probably needs a browser to show its \
+                 content). Try another official copy of the same material."
+            ));
+        }
+        let body = match find {
+            Some(phrase) => passages(&text, phrase, PAGE_LIMIT_CHARS)
+                .ok_or_else(|| anyhow!("\"{phrase}\" does not appear on {current}"))?,
+            None => truncate_chars(&text, PAGE_LIMIT_CHARS),
+        };
+        return Ok(format!("Content of {current}:\n{body}"));
     }
     Err(anyhow!("too many redirects"))
+}
+
+/// Passages of `text` around each case-insensitive occurrence of `phrase`, up to `budget` chars.
+/// Each passage starts a little before the match and runs on after it, so a heading match
+/// returns the provision under it.
+fn passages(text: &str, phrase: &str, budget: usize) -> Option<String> {
+    const BEFORE: usize = 300;
+    const AFTER: usize = 3_500;
+    let lower = text.to_lowercase();
+    let needle = phrase.to_lowercase();
+    // Lower-casing can change byte lengths for some scripts; fall back to exact matching then.
+    let (hay, needle) = if lower.len() == text.len() {
+        (lower.as_str(), needle)
+    } else {
+        (text, phrase.to_string())
+    };
+    let mut out = String::new();
+    let mut covered_to = 0;
+    let mut start_at = 0;
+    while let Some(pos) = hay[start_at..].find(&needle).map(|p| p + start_at) {
+        start_at = pos + needle.len().max(1);
+        if pos < covered_to {
+            continue;
+        }
+        let mut from = pos.saturating_sub(BEFORE);
+        while !text.is_char_boundary(from) {
+            from -= 1;
+        }
+        let mut to = (pos + AFTER).min(text.len());
+        while !text.is_char_boundary(to) {
+            to += 1;
+        }
+        let from = from.max(covered_to);
+        if !out.is_empty() {
+            out.push_str("\n[...]\n");
+        }
+        out.push_str(&text[from..to]);
+        covered_to = to;
+        if out.chars().count() >= budget {
+            return Some(truncate_chars(&out, budget));
+        }
+    }
+    (!out.is_empty()).then_some(out)
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {
@@ -644,6 +719,31 @@ mod tests {
         assert!(host_allowed("www.legislation.gov.au", &d));
         assert!(!host_allowed("evil-legislation.gov.au", &d));
         assert!(!host_allowed("legislation.gov.au.example.com", &d));
+    }
+
+    #[test]
+    fn every_edition_tool_has_a_definition() {
+        for name in Edition::General.tools() {
+            assert_eq!(definitions(&[name]).len(), 1, "no definition for {name}");
+        }
+    }
+
+    #[test]
+    fn finds_passages_around_a_phrase() {
+        let text = format!(
+            "{}393 Something else\n394 Application for unfair dismissal remedy\n(2) must be made within 21 days{}",
+            "x".repeat(5000),
+            "y".repeat(5000)
+        );
+        let p = passages(&text, "394 Application", 12_000).unwrap();
+        assert!(p.contains("must be made within 21 days"), "{p}");
+        assert!(p.len() < 5000);
+        assert!(passages(&text, "not there", 12_000).is_none());
+        assert!(
+            passages("Héllo wörld 394 ok", "394", 100)
+                .unwrap()
+                .contains("394 ok")
+        );
     }
 
     #[test]
