@@ -70,8 +70,13 @@ fn run_app() -> Result<()> {
                 }
                 UiEvent::Listening => println!("(listening…)"),
                 UiEvent::Working { request } => println!("> {request}"),
-                UiEvent::Answer { text, details, .. } => {
-                    println!("{text}\n({details})\n");
+                UiEvent::Answer {
+                    text,
+                    details,
+                    sources,
+                    ..
+                } => {
+                    println!("{text}\nSources: {}\n({details})\n", sources.join("; "));
                     self.0.open_follow_up(10);
                 }
                 UiEvent::Error(e) => eprintln!("error: {e}"),
@@ -104,8 +109,9 @@ fn cli_ask(question: &str) -> Result<()> {
     let cfg = config::Config::load();
     match claude::Claude::new(key, cfg.edition, &cfg.model()).ask(question, &[]) {
         Ok(a) => println!(
-            "{}\n({:.1}s, {})",
+            "{}\nSources: {}\n({:.1}s, {})",
             a.text,
+            a.sources.join("; "),
             started.elapsed().as_secs_f32(),
             a.usage.summary()
         ),

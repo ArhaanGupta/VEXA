@@ -66,6 +66,9 @@ pub struct Overlay {
     work: RECT,
     line_mask: Option<TextMask>,
     body_mask: Option<TextMask>,
+    /// Small dim text under the body (answer sources).
+    foot: String,
+    foot_mask: Option<TextMask>,
     /// When set, the overlay falls back to the status panel instead of hiding.
     panel: Option<Panel>,
 }
@@ -125,6 +128,8 @@ impl Overlay {
                 work: RECT::default(),
                 line_mask: None,
                 body_mask: None,
+                foot: String::new(),
+                foot_mask: None,
                 panel: None,
             })
         }
@@ -132,7 +137,7 @@ impl Overlay {
 
     /// Show the animated wave. `line` is optional context under it.
     pub fn show_wave(&mut self, line: &str, hide_after: Option<Duration>) {
-        self.set(Mode::Wave, Tone::Normal, line, "", hide_after, true);
+        self.set(Mode::Wave, Tone::Normal, line, "", "", hide_after, true);
     }
 
     /// Show a card with a dim first line and the main text.
@@ -144,7 +149,27 @@ impl Overlay {
         hide_after: Option<Duration>,
         speaking: bool,
     ) {
-        self.set(Mode::Card, tone, line, body, hide_after, speaking);
+        self.set(Mode::Card, tone, line, body, "", hide_after, speaking);
+    }
+
+    /// Show an answer card with its sources in small text underneath.
+    pub fn show_answer(
+        &mut self,
+        line: &str,
+        body: &str,
+        foot: &str,
+        hide_after: Option<Duration>,
+        speaking: bool,
+    ) {
+        self.set(
+            Mode::Card,
+            Tone::Normal,
+            line,
+            body,
+            foot,
+            hide_after,
+            speaking,
+        );
     }
 
     /// Speech finished: keep the card up a little longer so it can be read, then fade.
@@ -213,7 +238,7 @@ impl Overlay {
             return;
         }
         let (line, body, tone) = self.panel_texts();
-        self.set(Mode::Idle, tone, &line, &body, None, false);
+        self.set(Mode::Idle, tone, &line, &body, "", None, false);
     }
 
     pub fn hide(&mut self) {
@@ -236,6 +261,7 @@ impl Overlay {
         tone: Tone,
         line: &str,
         body: &str,
+        foot: &str,
         hide_after: Option<Duration>,
         lively: bool,
     ) {
@@ -249,9 +275,10 @@ impl Overlay {
         self.lively = lively;
         self.fade_from = None;
         self.hide_at = hide_after.map(|d| Instant::now() + d);
-        if self.line != line || self.body != body || was_hidden {
+        if self.line != line || self.body != body || self.foot != foot || was_hidden {
             self.line = line.to_string();
             self.body = body.to_string();
+            self.foot = foot.to_string();
             self.layout_text();
         }
         self.render();
@@ -323,6 +350,8 @@ impl Overlay {
         });
         self.body_mask = (!self.body.is_empty())
             .then(|| render_text(&self.body, self.px(15.5), true, text_w, false));
+        self.foot_mask = (!self.foot.is_empty())
+            .then(|| render_text(&self.foot, self.px(11.5), false, text_w, false));
     }
 
     fn size(&self) -> (i32, i32) {
@@ -341,6 +370,9 @@ impl Overlay {
                 }
                 if let Some(m) = &self.body_mask {
                     h += self.px(6.0) + m.h;
+                }
+                if let Some(m) = &self.foot_mask {
+                    h += self.px(10.0) + m.h;
                 }
                 (self.px(460.0), h + pad)
             }
@@ -462,6 +494,11 @@ impl Overlay {
                 if let Some(m) = &self.body_mask {
                     y += self.px(6.0);
                     blit_mask(&mut pm, m, pad, y, [245, 245, 250]);
+                    y += m.h;
+                }
+                if let Some(m) = &self.foot_mask {
+                    y += self.px(10.0);
+                    blit_mask(&mut pm, m, pad, y, [140, 170, 230]);
                 }
             }
             Mode::Hidden => {}

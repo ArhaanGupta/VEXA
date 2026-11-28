@@ -258,7 +258,14 @@ fn handle(
             request,
             text,
             details,
+            sources,
         } => {
+            let foot = if sources.is_empty() {
+                String::new()
+            } else {
+                let top: Vec<&str> = sources.iter().take(3).map(String::as_str).collect();
+                format!("Sources: {}", top.join(" \u{00b7} "))
+            };
             // While testing, show how long each step took and what it cost.
             let request = if cfg.always_show {
                 format!("{details} \u{00b7} {request}")
@@ -268,12 +275,12 @@ fn handle(
             if cfg.speak_answers {
                 stats.set_speaking(true);
                 tts.speak(&text);
-                overlay.show_card(&request, &text, Tone::Normal, None, true);
+                overlay.show_answer(&request, &text, &foot, None, true);
             } else {
                 let words = text.split_whitespace().count() as u64;
                 let read = Duration::from_millis((words * 320).clamp(5_000, 20_000));
                 stats.open_follow_up(FOLLOW_UP_SECS + read.as_secs());
-                overlay.show_card(&request, &text, Tone::Normal, Some(read), false);
+                overlay.show_answer(&request, &text, &foot, Some(read), false);
             }
         }
         UiEvent::Error(e) => {

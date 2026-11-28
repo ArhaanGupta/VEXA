@@ -32,6 +32,8 @@ pub enum UiEvent {
         text: String,
         /// Timings, tokens, searches and estimated cost of this answer.
         details: String,
+        /// Where the answer came from, shown under it (not spoken).
+        sources: Vec<String>,
     },
     /// Something failed; shown briefly.
     Error(String),
@@ -358,6 +360,7 @@ pub fn dispatch(request: String, ui: Arc<dyn Ui>, stt_time: Option<Duration>) {
                         request,
                         text: a.text,
                         details,
+                        sources: a.sources,
                     });
                 }
                 Err(e) => ui.send(UiEvent::Error(e.to_string())),

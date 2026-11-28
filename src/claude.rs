@@ -26,6 +26,50 @@ pub struct Answer {
     /// Plain text, suitable to speak aloud.
     pub text: String,
     pub usage: Usage,
+    /// Where the answer came from, most relevant first, e.g. "Fair Work Act 2009 (legislation.gov.au)".
+    pub sources: Vec<String>,
+}
+
+/// Collect sources: pages cited in the answer text, then pages read with fetch_page.
+fn collect_sources(responses: &[Value]) -> Vec<String> {
+    let mut seen: Vec<String> = Vec::new();
+    let mut out = Vec::new();
+    let mut add = |url: &str, title: Option<&str>| {
+        let url = url.trim();
+        if url.is_empty() || seen.iter().any(|u| u == url) {
+            return;
+        }
+        seen.push(url.to_string());
+        let host = url
+            .split_once("://")
+            .map_or(url, |(_, r)| r)
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("www.");
+        out.push(match title.map(str::trim).filter(|t| !t.is_empty()) {
+            Some(t) => format!("{t} ({host})"),
+            None => host.to_string(),
+        });
+    };
+    let blocks = || {
+        responses
+            .iter()
+            .flat_map(|r| r["content"].as_array().into_iter().flatten())
+    };
+    for b in blocks().filter(|b| b["type"] == "text") {
+        for c in b["citations"].as_array().into_iter().flatten() {
+            if let Some(url) = c["url"].as_str() {
+                add(url, c["title"].as_str());
+            }
+        }
+    }
+    for b in blocks().filter(|b| b["type"] == "tool_use" && b["name"] == "fetch_page") {
+        if let Some(url) = b["input"]["url"].as_str() {
+            add(url, None);
+        }
+    }
+    out
 }
 
 /// Tokens and searches used by one answer (summed over resumed tool loops).
@@ -287,6 +331,7 @@ impl Claude {
         let system = self.edition.system_prompt();
         let mut messages = build_messages(history, request, chrono::Local::now());
         let mut usage = Usage::default();
+        let mut responses: Vec<Value> = Vec::new();
         for _ in 0..=MAX_CONTINUATIONS {
             let resp = self.post(&self.build_request(&messages, system))?;
             usage.add(
@@ -294,6 +339,7 @@ impl Claude {
                 &resp["usage"],
             );
             usage.note_sources(&resp["content"]);
+            responses.push(resp.clone());
             match resp["stop_reason"].as_str() {
                 Some("pause_turn") => {
                     // Resume the server-side tool loop: resend with the partial assistant turn.
@@ -331,6 +377,7 @@ impl Claude {
                     return Ok(Answer {
                         text: speakable(&text),
                         usage,
+                        sources: collect_sources(&responses),
                     });
                 }
             }
@@ -536,6 +583,28 @@ mod tests {
         assert!(allowed.iter().any(|d| d == "legislation.gov.au"));
         assert!(allowed.len() <= 64);
         assert_eq!(body["output_config"]["effort"], "medium");
+    }
+
+    #[test]
+    fn collects_cited_and_read_sources_once() {
+        let responses = [
+            json!({ "content": [
+                { "type": "tool_use", "name": "fetch_page", "input": { "url": "https://www.legislation.gov.au/C2009A00028/latest/text" } }
+            ]}),
+            json!({ "content": [
+                { "type": "text", "text": "Within 21 days.", "citations": [
+                    { "url": "https://www.legislation.gov.au/C2009A00028/latest/text", "title": "Fair Work Act 2009" },
+                    { "url": "https://www.fwc.gov.au/unfair-dismissal", "title": "Unfair dismissal" }
+                ]}
+            ]}),
+        ];
+        assert_eq!(
+            collect_sources(&responses),
+            [
+                "Fair Work Act 2009 (legislation.gov.au)",
+                "Unfair dismissal (fwc.gov.au)"
+            ]
+        );
     }
 
     #[test]
