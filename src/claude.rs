@@ -225,7 +225,11 @@ impl Claude {
             "web_search_20260209"
         };
         let mut tools = crate::tools::definitions(self.edition.tools());
-        let mut search = json!({ "type": search_tool, "name": "web_search", "max_uses": 3 });
+        let mut search = json!({
+            "type": search_tool,
+            "name": "web_search",
+            "max_uses": self.edition.max_searches(),
+        });
         if let Some(domains) = self.edition.trusted_domains() {
             search["allowed_domains"] = json!(domains);
         }
@@ -518,6 +522,20 @@ mod tests {
             &json!({ "input_tokens": 0, "cache_read_input_tokens": 1_000_000, "output_tokens": 0 }),
         );
         assert!((u.cost_usd - 0.2).abs() < 1e-9, "{}", u.cost_usd);
+    }
+
+    #[test]
+    fn legal_edition_limits_search_to_official_sources() {
+        let c = Claude::new("k".into(), Edition::LegalAu, "claude-opus-5-5");
+        let body = c.build_request(&[json!({ "role": "user", "content": "hi" })], "sys");
+        let tools = body["tools"].as_array().unwrap();
+        let names: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(names, ["fetch_page", "web_search"]);
+        let search = tools.last().unwrap();
+        let allowed = search["allowed_domains"].as_array().unwrap();
+        assert!(allowed.iter().any(|d| d == "legislation.gov.au"));
+        assert!(allowed.len() <= 64);
+        assert_eq!(body["output_config"]["effort"], "medium");
     }
 
     #[test]

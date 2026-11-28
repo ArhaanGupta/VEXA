@@ -422,7 +422,6 @@ fn fetch_page(url: &str, find: Option<&str>, trusted: Option<&[&str]>) -> Result
     let mut current = url.trim().to_string();
     // Follow up to three redirects, checking each target is public too.
     for _ in 0..4 {
-        check_public(&current)?;
         if let Some(domains) = trusted {
             let (_, host, _, _) = split_url(&current)?;
             if !host_allowed(&host, domains) {
@@ -431,6 +430,7 @@ fn fetch_page(url: &str, find: Option<&str>, trusted: Option<&[&str]>) -> Result
                 ));
             }
         }
+        check_public(&current)?;
         let mut resp = agent
             .get(&current)
             .header("user-agent", "Mozilla/5.0 (compatible; Vexa assistant)")
@@ -723,8 +723,10 @@ mod tests {
 
     #[test]
     fn every_edition_tool_has_a_definition() {
-        for name in Edition::General.tools() {
-            assert_eq!(definitions(&[name]).len(), 1, "no definition for {name}");
+        for edition in [Edition::General, Edition::LegalAu] {
+            for name in edition.tools() {
+                assert_eq!(definitions(&[name]).len(), 1, "no definition for {name}");
+            }
         }
     }
 
@@ -744,6 +746,35 @@ mod tests {
                 .unwrap()
                 .contains("394 ok")
         );
+    }
+
+    #[test]
+    fn legal_edition_cannot_use_other_tools_or_sites() {
+        let (msg, is_error) = run(
+            "stock_prices",
+            &json!({ "symbol": "NVDA" }),
+            Edition::LegalAu,
+        );
+        assert!(is_error && msg.contains("not available"), "{msg}");
+        let err = fetch_page(
+            "https://example.com/",
+            None,
+            Edition::LegalAu.trusted_domains(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("trusted sources") || err.contains("resolve"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn general_edition_still_blocks_local_addresses() {
+        let err = fetch_page("http://127.0.0.1:8080/", None, None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("public internet"), "{err}");
     }
 
     #[test]
