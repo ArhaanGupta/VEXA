@@ -11,6 +11,17 @@ A small wave appears at the bottom-centre of your screen to show the request was
 answer appears in a card there and is read aloud. Vexa never takes focus, so it never interrupts
 your typing.
 
+## Editions
+
+One app, tuned for different users. Switch from the tray icon: **Edition**.
+
+| Edition | For | Sources | Model |
+|---|---|---|---|
+| **General** | Everyday questions | Built-in knowledge, market data, weather, known pages, then web search | Claude Sonnet 5.5 |
+| **Legal (Australia)** | Australian law | Official only: legislation registers, courts and tribunals, Parliament, regulators, AustLII. Every answer cites the provision it read; state law defaults to New South Wales. | Claude Opus 5.5 |
+
+Each answer card lists its sources underneath.
+
 ## Privacy
 
 - **Audio never leaves your PC, and is never written to disk.** Voice detection and speech-to-text
@@ -80,6 +91,9 @@ Saved at `%LOCALAPPDATA%\Vexa\settings.json`:
 | `stt_model` | `base.en-q5_1` | `tiny.en-q5_1` is faster on older PCs, slightly less accurate |
 | `stt_threads` | `0` | CPU threads for speech-to-text (0 = automatic) |
 | `vad_threshold` | `0.5` | Raise to 0.6-0.7 in noisy rooms |
+| `edition` | `general` | `general` or `legal_au` (also in the tray menu) |
+| `model` | edition default | Override the Claude model, e.g. `claude-opus-5-5` |
+| `always_show` | `true` | Keep the live status panel on screen (testing) |
 
 ## Roadmap
 
