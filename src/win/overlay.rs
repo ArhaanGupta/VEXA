@@ -78,6 +78,7 @@ struct Panel {
     paused: Arc<AtomicBool>,
     heard: String,
     addressed: bool,
+    edition: String,
 }
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -187,8 +188,19 @@ impl Overlay {
             paused,
             heard: String::new(),
             addressed: false,
+            edition: String::new(),
         });
         self.show_panel();
+    }
+
+    /// Show which edition is active on the status panel.
+    pub fn set_edition(&mut self, label: &str) {
+        if let Some(p) = &mut self.panel {
+            p.edition = label.to_string();
+            if self.mode == Mode::Idle {
+                self.show_panel();
+            }
+        }
     }
 
     /// Update the "last heard" line of the status panel.
@@ -208,10 +220,18 @@ impl Overlay {
             return (String::new(), String::new(), Tone::Normal);
         };
         if p.paused.load(Ordering::Relaxed) {
-            return ("Vexa · Paused".into(), String::new(), Tone::Normal);
+            return (
+                format!("Vexa {} · Paused", p.edition),
+                String::new(),
+                Tone::Normal,
+            );
         }
         if let Some(problem) = p.stats.mic_problem() {
-            let line = format!("Vexa · Not hearing anything ({})", p.stats.mic_name());
+            let line = format!(
+                "Vexa {} · Not hearing anything ({})",
+                p.edition,
+                p.stats.mic_name()
+            );
             return (line, problem, Tone::Error);
         }
         let state = if !p.stats.ready.load(Ordering::Relaxed) {
@@ -230,7 +250,7 @@ impl Overlay {
             (false, true) => format!("Heard (for Vexa): \u{201c}{}\u{201d}", p.heard),
             (false, false) => format!("Heard: \u{201c}{}\u{201d}", p.heard),
         };
-        (format!("Vexa · {state}"), body, Tone::Normal)
+        (format!("Vexa {} · {state}", p.edition), body, Tone::Normal)
     }
 
     fn show_panel(&mut self) {

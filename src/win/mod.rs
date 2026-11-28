@@ -6,6 +6,7 @@ mod settings;
 mod tts;
 
 use crate::config::Config;
+use crate::edition::Edition;
 use crate::engine::{self, Ui, UiEvent};
 use anyhow::Result;
 use overlay::{ANIM_TIMER, Overlay, Tone};
@@ -13,7 +14,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Sender, channel};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem};
+use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 use tray_icon::{Icon, TrayIconBuilder};
 use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError, HWND, LPARAM, WPARAM};
 use windows::Win32::System::Registry::{
@@ -98,10 +99,24 @@ pub fn run() -> Result<()> {
     let test_item = MenuItem::new("Test Claude connection", true, None);
     let autostart_item = CheckMenuItem::new("Start with Windows", true, autostart::enabled(), None);
     let quit = MenuItem::new("Quit Vexa", true, None);
+    let edition_items: Vec<(Edition, CheckMenuItem)> = Edition::ALL
+        .iter()
+        .map(|&e| {
+            (
+                e,
+                CheckMenuItem::new(e.label(), true, e == cfg.edition, None),
+            )
+        })
+        .collect();
+    let edition_menu = Submenu::new("Edition", true);
+    for (_, item) in &edition_items {
+        edition_menu.append(item)?;
+    }
     let menu = Menu::new();
     menu.append_items(&[
         &status,
         &PredefinedMenuItem::separator(),
+        &edition_menu,
         &pause,
         &settings_item,
         &test_item,
@@ -132,6 +147,7 @@ pub fn run() -> Result<()> {
 
     if cfg.always_show {
         overlay.keep_panel(stats.clone(), paused.clone());
+        overlay.set_edition(cfg.edition.label());
     } else {
         overlay.show_card(
             "Vexa",
@@ -184,10 +200,22 @@ pub fn run() -> Result<()> {
                 } else if ev.id == test_item.id() {
                     // Exercises the API key, network and answer display without the microphone.
                     engine::dispatch(
-                        "What is today's date, and what is the weather in Sydney right now?".into(),
+                        Config::load().edition.test_question().into(),
                         ui.clone(),
                         None,
                     );
+                } else if let Some(&(edition, _)) =
+                    edition_items.iter().find(|(_, item)| ev.id == *item.id())
+                {
+                    // Exactly one edition is ticked; save it so the next request uses it.
+                    for (e, item) in &edition_items {
+                        item.set_checked(*e == edition);
+                    }
+                    let mut saved = Config::load();
+                    saved.edition = edition;
+                    let _ = saved.save();
+                    cfg = saved;
+                    overlay.set_edition(edition.label());
                 } else if ev.id == autostart_item.id() {
                     let on = autostart_item.is_checked();
                     if autostart::set(on).is_err() {

@@ -14,6 +14,31 @@ pub enum Edition {
 }
 
 impl Edition {
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub const ALL: &'static [Edition] = &[Edition::General, Edition::LegalAu];
+
+    /// Name shown in the tray and on the status panel.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn label(self) -> &'static str {
+        match self {
+            Edition::General => "General",
+            Edition::LegalAu => "Legal (Australia)",
+        }
+    }
+
+    /// Question used by "Test Claude connection" in the tray.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn test_question(self) -> &'static str {
+        match self {
+            Edition::General => {
+                "What is today's date, and what is the weather in Sydney right now?"
+            }
+            Edition::LegalAu => {
+                "What is the time limit to lodge an unfair dismissal application under the Fair Work Act?"
+            }
+        }
+    }
+
     /// System prompt for this edition.
     pub fn system_prompt(self) -> &'static str {
         match self {
@@ -204,3 +229,28 @@ an official source\" and what you did find. Do not fill gaps with assumptions.\n
 short line suggesting they confirm with a lawyer.\n\
 \n\
 The current local date and time are given in a system message after the user's question.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editions_round_trip_through_settings() {
+        for &e in Edition::ALL {
+            let json = serde_json::to_string(&e).unwrap();
+            assert_eq!(serde_json::from_str::<Edition>(&json).unwrap(), e);
+            assert!(!e.label().is_empty() && !e.test_question().is_empty());
+        }
+        assert_eq!(
+            serde_json::to_string(&Edition::LegalAu).unwrap(),
+            "\"legal_au\""
+        );
+    }
+
+    #[test]
+    fn legal_sources_fit_the_search_tool_limit() {
+        let d = LEGAL_AU_SOURCES;
+        assert!(!d.is_empty() && d.len() <= 64);
+        assert!(d.iter().all(|h| !h.contains('/') && !h.starts_with("www.")));
+    }
+}
